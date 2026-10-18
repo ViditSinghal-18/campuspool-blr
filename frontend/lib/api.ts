@@ -4,6 +4,7 @@ import {
   SimulationResult,
   SnapAndRequestResult,
   TransitNode,
+  WeatherTelemetry,
 } from './types';
 import {
   NODES,
@@ -189,3 +190,40 @@ export async function snapAndRequestRide(params: {
     };
   }
 }
+
+export async function fetchWeatherTelemetry(): Promise<{ data: WeatherTelemetry; isLive: boolean }> {
+  try {
+    const res = await fetch(`${API_BASE}/api/telemetry/weather`, {
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    return { data, isLive: true };
+  } catch {
+    // Graceful offline fallback
+    return {
+      data: {
+        temperatureC: 24.5,
+        precipitationMm: 0.0,
+        isRaining: false,
+        conditionText: 'Clear sky (Normal)',
+        recommendedSurgeMultiplier: 1.0,
+      },
+      isLive: false,
+    };
+  }
+}
+
+export async function resetSimulation(): Promise<{ isLive: boolean }> {
+  fallbackRequests = [];
+  try {
+    const res = await fetch(`${API_BASE}/api/simulation/reset`, {
+      method: 'DELETE',
+      signal: AbortSignal.timeout(2500),
+    });
+    return { isLive: res.ok };
+  } catch {
+    return { isLive: false };
+  }
+}
+

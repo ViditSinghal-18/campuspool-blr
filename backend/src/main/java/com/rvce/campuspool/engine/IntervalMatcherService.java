@@ -103,6 +103,14 @@ public class IntervalMatcherService {
     }
 
     /**
+     * Clears all requests from the live store.
+     * Used by {@code DELETE /api/simulation/reset}.
+     */
+    public void clearLiveRequests() {
+        liveRequests.clear();
+    }
+
+    /**
      * Adds or replaces a single request by userId.
      * Thread-safe — uses CopyOnWriteArrayList bulk-replace approach.
      */

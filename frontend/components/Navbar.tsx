@@ -11,12 +11,15 @@ import {
   Radio,
 } from 'lucide-react';
 
+import { WeatherTelemetry } from '../lib/types';
+
 interface NavbarProps {
   peakMode: boolean;
   onTogglePeakMode: () => void;
   isBackendLive: boolean;
   isTogglingPeak: boolean;
   activePoolCount: number;
+  weather: WeatherTelemetry | null;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -25,6 +28,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   isBackendLive,
   isTogglingPeak,
   activePoolCount,
+  weather,
 }) => {
   return (
     <header className="h-16 w-full border-b border-slate-800 bg-slate-950/90 backdrop-blur-md px-4 lg:px-6 flex items-center justify-between z-30 select-none">
@@ -56,6 +60,34 @@ export const Navbar: React.FC<NavbarProps> = ({
 
       {/* Center / Right controls */}
       <div className="flex items-center space-x-3 sm:space-x-4">
+        {/* Live Bengaluru Weather & Rain Surge Pill */}
+        {weather && (
+          <div
+            className={`hidden md:flex items-center space-x-2 px-3 py-1.5 rounded-full text-xs font-semibold border backdrop-blur-md shadow-sm transition-all ${
+              weather.isRaining || weather.recommendedSurgeMultiplier > 1.0
+                ? 'bg-blue-950/80 border-blue-500/60 text-blue-200 shadow-blue-950/50'
+                : 'bg-slate-900/90 border-slate-700/60 text-slate-200'
+            }`}
+            title={`Live Bengaluru Weather (Open-Meteo): ${weather.precipitationMm}mm rain, ${weather.recommendedSurgeMultiplier}x surge multiplier`}
+          >
+            <span className="text-sm">
+              {weather.isRaining ? '🌧️' : '🌤️'}
+            </span>
+            <span className="font-mono">
+              Bengaluru Live: {Math.round(weather.temperatureC)}°C {weather.conditionText}
+            </span>
+            {weather.recommendedSurgeMultiplier > 1.0 ? (
+              <span className="px-1.5 py-0.5 rounded-full text-[10px] font-mono bg-blue-900/90 text-blue-300 border border-blue-400/40 font-bold animate-pulse">
+                {weather.recommendedSurgeMultiplier}x Rain Surge Active
+              </span>
+            ) : (
+              <span className="px-1.5 py-0.5 rounded-full text-[10px] font-mono bg-emerald-950/80 text-emerald-300 border border-emerald-800/60">
+                Normal Rates
+              </span>
+            )}
+          </div>
+        )}
+
         {/* Backend health status pill */}
         <div
           className={`hidden xl:flex items-center space-x-1.5 px-3 py-1 rounded-full text-xs font-mono font-medium border ${

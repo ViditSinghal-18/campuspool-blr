@@ -2,25 +2,32 @@ package com.rvce.campuspool.controller;
 
 import com.rvce.campuspool.engine.BengaluruGraphEngine;
 import com.rvce.campuspool.engine.IntervalMatcherService;
+import com.rvce.campuspool.engine.WeatherTelemetryService;
 import com.rvce.campuspool.model.Models.*;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * REST controller exposing the CampusPool BLR simulation API.
  *
  * <h3>Endpoints</h3>
  * <ul>
- *   <li>{@code GET  /api/graph/nodes}              — full graph (nodes + adjacency)</li>
- *   <li>{@code POST /api/graph/traffic-mode}        — toggle peak-hour congestion weights</li>
- *   <li>{@code POST /api/simulation/seed}           — seed 15 RVCE commuter requests,
- *       run matcher, return results + telemetry</li>
- *   <li>{@code POST /api/rides/request}             — add custom ride request by node ID</li>
- *   <li>{@code POST /api/rides/snap-and-request}    — GPS lat/lng → Haversine snap → route</li>
+ *   <li>{@code GET    /api/graph/nodes}              — full graph (nodes + adjacency)</li>
+ *   <li>{@code POST   /api/graph/traffic-mode}        — toggle peak-hour congestion weights</li>
+ *   <li>{@code GET    /api/telemetry/weather}         — live Open-Meteo weather & rain surge</li>
+ *   <li>{@code POST   /api/simulation/seed}           — seed 15 RVCE commuter requests</li>
+ *   <li>{@code GET    /api/simulation/stream}         — live SSE stream of commuters arriving every 2.5s</li>
+ *   <li>{@code DELETE /api/simulation/reset}          — clear all active commuters</li>
+ *   <li>{@code POST   /api/rides/request}             — add custom ride request by node ID</li>
+ *   <li>{@code POST   /api/rides/snap-and-request}    — GPS lat/lng → Haversine snap → route</li>
  * </ul>
  *
  * <p>CORS is allowed for {@code http://localhost:3000} (the Next.js dev server).
@@ -36,13 +43,16 @@ public class SimulationController {
     // Dependencies
     // -----------------------------------------------------------------------
 
-    private final BengaluruGraphEngine   graphEngine;
-    private final IntervalMatcherService matcherService;
+    private final BengaluruGraphEngine    graphEngine;
+    private final IntervalMatcherService  matcherService;
+    private final WeatherTelemetryService weatherService;
 
     public SimulationController(BengaluruGraphEngine graphEngine,
-                                IntervalMatcherService matcherService) {
+                                IntervalMatcherService matcherService,
+                                WeatherTelemetryService weatherService) {
         this.graphEngine    = graphEngine;
         this.matcherService = matcherService;
+        this.weatherService = weatherService;
     }
 
     // -----------------------------------------------------------------------
@@ -139,6 +149,118 @@ public class SimulationController {
         body.put("clusters",         clusters);
         body.put("executionTimeMs",  execMs);
         body.put("totalFareSavedRs", Math.round(fareSaved * 100.0) / 100.0);
+        return ResponseEntity.ok(body);
+    }
+
+    // -----------------------------------------------------------------------
+    // GET /api/telemetry/weather
+    // -----------------------------------------------------------------------
+
+    /**
+     * Fetches live weather telemetry for the Bengaluru / RVCE corridor from
+     * Open-Meteo, calculates rain congestion multiplier, and updates Dijkstra routing.
+     */
+    @Operation(summary = "Get live Bengaluru weather and rain-surge multiplier (Open-Meteo)")
+    @GetMapping("/api/telemetry/weather")
+    public ResponseEntity<WeatherTelemetry> getWeatherTelemetry(
+            @RequestParam(name = "simulateRain", defaultValue = "false") boolean simulateRain) {
+        WeatherTelemetry telemetry = weatherService.fetchWeather(simulateRain);
+        return ResponseEntity.ok(telemetry);
+    }
+
+    // -----------------------------------------------------------------------
+    // GET /api/simulation/stream
+    // -----------------------------------------------------------------------
+
+    /**
+     * Real-time SSE stream emitting a new incoming commuter request every 2.5s.
+     * Re-runs the interval matcher on each arrival and streams updated clusters live.
+     */
+    @Operation(summary = "Live SSE stream of commuters arriving every 2.5s and real-time clustering")
+    @GetMapping(value = "/api/simulation/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter streamSimulation() {
+        SseEmitter emitter = new SseEmitter(180_000L); // 3 minutes timeout
+        List<RideRequest> seeded = buildSeededRequests();
+
+        // Start with a clean pool for the live arrival sequence
+        matcherService.clearLiveRequests();
+
+        ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "campuspool-sse-stream");
+            t.setDaemon(true);
+            return t;
+        });
+
+        AtomicInteger index = new AtomicInteger(0);
+
+        Runnable cleanup = () -> {
+            try {
+                executor.shutdownNow();
+            } catch (Exception ignored) {}
+        };
+
+        emitter.onCompletion(cleanup);
+        emitter.onTimeout(cleanup);
+        emitter.onError(e -> cleanup.run());
+
+        executor.scheduleAtFixedRate(() -> {
+            int i = index.getAndIncrement();
+            if (i >= seeded.size()) {
+                try {
+                    emitter.complete();
+                } catch (Exception ignored) {}
+                cleanup.run();
+                return;
+            }
+
+            try {
+                RideRequest rider = seeded.get(i);
+                long t0 = System.currentTimeMillis();
+                matcherService.upsertLiveRequest(rider);
+                List<MatchCluster> clusters = matcherService.matchLive();
+                long execMs = System.currentTimeMillis() - t0;
+                double fareSaved = computeTotalFareSaved(clusters);
+
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("step", i + 1);
+                payload.put("totalSteps", seeded.size());
+                payload.put("latestRider", rider);
+                payload.put("requests", matcherService.getLiveRequests());
+                payload.put("clusters", clusters);
+                payload.put("executionTimeMs", execMs);
+                payload.put("totalFareSavedRs", Math.round(fareSaved * 100.0) / 100.0);
+
+                emitter.send(SseEmitter.event()
+                        .id(String.valueOf(i + 1))
+                        .data(payload, MediaType.APPLICATION_JSON));
+            } catch (Exception ex) {
+                cleanup.run();
+                try {
+                    emitter.completeWithError(ex);
+                } catch (Exception ignored) {}
+            }
+        }, 0, 2500, TimeUnit.MILLISECONDS);
+
+        return emitter;
+    }
+
+    // -----------------------------------------------------------------------
+    // DELETE /api/simulation/reset
+    // -----------------------------------------------------------------------
+
+    /**
+     * Resets the commuter pool, clearing all live requests and clusters.
+     */
+    @Operation(summary = "Clear all active commuters and reset the simulation")
+    @DeleteMapping("/api/simulation/reset")
+    public ResponseEntity<Map<String, Object>> resetSimulation() {
+        matcherService.clearLiveRequests();
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("message", "Active commuter pool cleared.");
+        body.put("requests", Collections.emptyList());
+        body.put("clusters", Collections.emptyList());
+        body.put("totalFareSavedRs", 0.0);
         return ResponseEntity.ok(body);
     }
 

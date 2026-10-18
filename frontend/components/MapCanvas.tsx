@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useState, useRef } from 'react';
 import {
   MapContainer,
   TileLayer,
@@ -100,6 +100,60 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
   pickedDropoff,
   clusterColors,
 }) => {
+  // In-memory cache for OSRM curving road geometry coordinates
+  const [osrmCache, setOsrmCache] = useState<Record<string, [number, number][]>>({});
+  const fetchingCorridors = useRef<Set<string>>(new Set());
+
+  // Real curving road geometry via OSRM Public API
+  useEffect(() => {
+    let isMounted = true;
+
+    clusters.forEach((cluster) => {
+      if (!cluster.sharedCorridorNodeIds || cluster.sharedCorridorNodeIds.length < 2) return;
+      const key = cluster.sharedCorridorNodeIds.join(';');
+      if (osrmCache[key] || fetchingCorridors.current.has(key)) return;
+
+      const stationNodes = cluster.sharedCorridorNodeIds
+        .map((id) => NODES[id])
+        .filter(Boolean);
+
+      if (stationNodes.length < 2) return;
+
+      const waypoints = stationNodes
+        .map((node) => `${node.lng},${node.lat}`)
+        .join(';');
+
+      fetchingCorridors.current.add(key);
+
+      fetch(
+        `https://router.project-osrm.org/route/v1/driving/${waypoints}?overview=full&geometries=geojson`,
+        { signal: AbortSignal.timeout(4000) }
+      )
+        .then((res) => {
+          if (!res.ok) throw new Error('OSRM error');
+          return res.json();
+        })
+        .then((data) => {
+          if (isMounted && data.code === 'Ok' && data.routes?.[0]?.geometry?.coordinates) {
+            const curvedCoords: [number, number][] = data.routes[0].geometry.coordinates.map(
+              ([lng, lat]: [number, number]) => [lat, lng]
+            );
+            setOsrmCache((prev) => ({ ...prev, [key]: curvedCoords }));
+          }
+        })
+        .catch(() => {
+          // Gracefully fallback to straight node-to-node polyline
+        })
+        .finally(() => {
+          fetchingCorridors.current.delete(key);
+        });
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [clusters, osrmCache]);
+
   // Base graph edges geometry
   const baseEdgeLines = useMemo(() => {
     return GRAPH_EDGES.map(([u, v, dist]) => {
@@ -162,7 +216,7 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
         </div>
         <div className="flex items-center space-x-2">
           <span className="w-6 h-1 rounded-full bg-gradient-to-r from-cyan-400 to-emerald-400"></span>
-          <span>Active Pooled Corridors</span>
+          <span>Active Pooled Corridors (OSRM Curving)</span>
         </div>
       </div>
 
@@ -209,9 +263,10 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
           );
         })}
 
-        {/* 2. MatchCluster Shared Corridors (Glowing neon colored overlays) */}
+        {/* 2. MatchCluster Shared Corridors (Glowing neon colored overlays with OSRM real road curves) */}
         {clusters.map((cluster, idx) => {
           const isSelected = selectedCluster?.clusterId === cluster.clusterId;
+          const key = cluster.sharedCorridorNodeIds.join(';');
           const coords: [number, number][] = cluster.sharedCorridorNodeIds
             .map((id) => NODES[id])
             .filter(Boolean)
@@ -219,13 +274,17 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
 
           if (coords.length < 2) return null;
 
+          // Use real curving OSRM street geometry if cached, otherwise fallback to straight station coords
+          const corridorPositions = osrmCache[key] || coords;
+          const isCurving = !!osrmCache[key];
+
           const color = clusterColors[idx % clusterColors.length];
 
           return (
             <React.Fragment key={`corridor-${cluster.clusterId}`}>
               {/* Outer soft glow line */}
               <Polyline
-                positions={coords}
+                positions={corridorPositions}
                 pathOptions={{
                   color,
                   weight: isSelected ? 12 : 8,
@@ -236,7 +295,7 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
               />
               {/* Inner crisp neon line */}
               <Polyline
-                positions={coords}
+                positions={corridorPositions}
                 pathOptions={{
                   color,
                   weight: isSelected ? 6 : 4,
@@ -259,6 +318,9 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
                     </div>
                     <div className="text-emerald-400 font-semibold">
                       Fare: ₹{cluster.discountedFarePerPersonRs}/rider ({cluster.savingsPercentage}% Saved)
+                    </div>
+                    <div className="text-[10px] text-cyan-300/80 font-mono pt-1 border-t border-slate-800">
+                      {isCurving ? '⚡ Real Curving Road Geometry (OSRM)' : 'Station Link Polyline'}
                     </div>
                   </div>
                 </Popup>

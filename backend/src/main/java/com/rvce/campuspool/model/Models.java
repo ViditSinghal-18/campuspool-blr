@@ -92,4 +92,25 @@ public final class Models {
             double discountedFarePerPersonRs,
             int savingsPercentage
     ) {}
+
+    // -----------------------------------------------------------------------
+    // Telemetry domain
+    // -----------------------------------------------------------------------
+
+    /**
+     * Live Bengaluru weather and rain-surge telemetry.
+     *
+     * @param temperatureC              Current temperature in Celsius.
+     * @param precipitationMm           Current precipitation/rain in millimetres.
+     * @param isRaining                 True if rain or precipitation > 0.
+     * @param conditionText             Human-readable weather description.
+     * @param recommendedSurgeMultiplier Surge multiplier recommended for traffic (1.0 to 1.5).
+     */
+    public record WeatherTelemetry(
+            double temperatureC,
+            double precipitationMm,
+            boolean isRaining,
+            String conditionText,
+            double recommendedSurgeMultiplier
+    ) {}
 }

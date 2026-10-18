@@ -7,6 +7,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * In-memory weighted undirected graph for the Bengaluru Purple Line /
@@ -55,6 +56,12 @@ public class BengaluruGraphEngine {
      * Toggle via {@link #setPeakMode(boolean)}.
      */
     private final AtomicBoolean peakMode = new AtomicBoolean(false);
+
+    /**
+     * Controls weather / rain congestion multiplier (default 1.0 = dry/normal).
+     * Set dynamically via {@link #setRainMultiplier(double)}.
+     */
+    private final AtomicReference<Double> rainMultiplier = new AtomicReference<>(1.0);
 
     // -----------------------------------------------------------------------
     // Graph state (populated once at startup, read-only thereafter)
@@ -149,6 +156,20 @@ public class BengaluruGraphEngine {
      */
     public void setPeakMode(boolean peak) {
         peakMode.set(peak);
+    }
+
+    /** Returns current rain congestion multiplier (1.0 = normal/dry, >1.0 = rain surge). */
+    public double getRainMultiplier() {
+        return rainMultiplier.get();
+    }
+
+    /**
+     * Sets the rain congestion multiplier (minimum 1.0).
+     *
+     * @param multiplier Surge multiplier applied during rain (e.g. 1.2x to 1.5x).
+     */
+    public void setRainMultiplier(double multiplier) {
+        rainMultiplier.set(Math.max(1.0, multiplier));
     }
 
     // -----------------------------------------------------------------------
@@ -263,10 +284,14 @@ public class BengaluruGraphEngine {
                 String neighbour = edge.targetNodeId();
                 if (visited.contains(neighbour)) continue;
 
-                // Apply peak multiplier when this edge leaves a congested node
+                // Apply peak and rain multipliers to edge routing cost
                 double edgeCost = edge.distanceKm();
                 if (peak && CONGESTED_NODES.contains(current)) {
                     edgeCost *= PEAK_MULTIPLIER;
+                }
+                double rain = rainMultiplier.get();
+                if (rain > 1.0) {
+                    edgeCost *= rain;
                 }
 
                 double newDist = dist.get(current) + edgeCost;

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import { Navbar } from '../components/Navbar';
 import { TelemetryBento } from '../components/TelemetryBento';
@@ -13,6 +13,7 @@ import {
   RideRequest,
   SnapInfo,
   TransitNode,
+  WeatherTelemetry,
 } from '../lib/types';
 import {
   fetchGraph,
@@ -20,9 +21,11 @@ import {
   snapAndRequestRide,
   toggleTrafficMode,
   checkBackendHealth,
+  fetchWeatherTelemetry,
+  resetSimulation,
 } from '../lib/api';
-import { NODES } from '../lib/fallbackEngine';
-import { Users, PlusCircle, Zap } from 'lucide-react';
+import { NODES, buildSeededRequests, matchRides } from '../lib/fallbackEngine';
+import { Users, PlusCircle, Zap, RotateCcw, Radio, X } from 'lucide-react';
 
 // Dynamically import MapCanvas with SSR disabled
 const MapCanvas = dynamic(() => import('../components/MapCanvas'), {
@@ -80,11 +83,45 @@ export default function DashboardPage() {
   }); // Default Indiranagar
   const [lastSnapInfo, setLastSnapInfo] = useState<SnapInfo | null>(null);
 
+  // Live Bengaluru Weather Telemetry
+  const [weather, setWeather] = useState<WeatherTelemetry | null>(null);
+
+  // Live Stream Mode State (SSE)
+  const [isStreaming, setIsStreaming] = useState<boolean>(false);
+  const [streamStep, setStreamStep] = useState<number>(0);
+  const [streamTotal, setStreamTotal] = useState<number>(15);
+  const [liveToast, setLiveToast] = useState<{ id: string; message: string; subtext?: string } | null>(null);
+
+  const eventSourceRef = useRef<EventSource | null>(null);
+  const fallbackTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const runningFallbackReqsRef = useRef<RideRequest[]>([]);
+
   useEffect(() => {
     setMounted(true);
   }, []);
 
-  // Initial Load: check backend health, fetch graph, seed initial simulation
+  // Auto-dismiss live toast after 4.5 seconds
+  useEffect(() => {
+    if (!liveToast) return;
+    const timer = setTimeout(() => {
+      setLiveToast(null);
+    }, 4500);
+    return () => clearTimeout(timer);
+  }, [liveToast]);
+
+  // Cleanup SSE & timers on unmount
+  useEffect(() => {
+    return () => {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+      }
+      if (fallbackTimerRef.current) {
+        clearInterval(fallbackTimerRef.current);
+      }
+    };
+  }, []);
+
+  // Initial Load: check backend health, fetch graph, seed initial simulation, fetch weather
   useEffect(() => {
     let isMounted = true;
 
@@ -92,6 +129,14 @@ export default function DashboardPage() {
       const isLive = await checkBackendHealth();
       if (!isMounted) return;
       setIsBackendLive(isLive);
+
+      // Fetch live weather telemetry
+      try {
+        const wRes = await fetchWeatherTelemetry();
+        if (isMounted) setWeather(wRes.data);
+      } catch (e) {
+        console.warn('Weather fetch failed:', e);
+      }
 
       // Fetch graph nodes
       const graphRes = await fetchGraph();
@@ -126,9 +171,20 @@ export default function DashboardPage() {
       if (isMounted) setIsBackendLive(live);
     }, 15000);
 
+    // Periodic weather update every 45s
+    const weatherTimer = setInterval(async () => {
+      try {
+        const wRes = await fetchWeatherTelemetry();
+        if (isMounted) setWeather(wRes.data);
+      } catch (e) {
+        console.warn('Periodic weather update failed:', e);
+      }
+    }, 45000);
+
     return () => {
       isMounted = false;
       clearInterval(timer);
+      clearInterval(weatherTimer);
     };
   }, []);
 
@@ -156,6 +212,17 @@ export default function DashboardPage() {
 
   // Seed 15 mock commuters CTA
   const handleSeedSimulation = useCallback(async () => {
+    // Stop stream if active
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+    if (fallbackTimerRef.current) {
+      clearInterval(fallbackTimerRef.current);
+      fallbackTimerRef.current = null;
+    }
+    setIsStreaming(false);
+
     setIsSeeding(true);
     try {
       const res = await seedSimulation(peakMode);
@@ -165,14 +232,201 @@ export default function DashboardPage() {
       setTotalFareSavedRs(res.data.totalFareSavedRs);
       setIsBackendLive(res.isLive);
       setSelectedCluster(null);
-      // Stay on or switch to Tab 1 to see the 15 mock commuters
       setActiveTab('pools');
+      setLiveToast({
+        id: String(Date.now()),
+        message: 'Populated 15 Mock Commuters',
+        subtext: 'Evening 4:00 PM Peak corridor pool matching completed.',
+      });
     } catch (err) {
       console.error('Seed simulation failed:', err);
     } finally {
       setIsSeeding(false);
     }
   }, [peakMode]);
+
+  // Toggle Real-Time SSE Commuter Stream Mode
+  const handleToggleStream = useCallback(async () => {
+    if (isStreaming) {
+      // Stop ongoing stream
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
+      }
+      if (fallbackTimerRef.current) {
+        clearInterval(fallbackTimerRef.current);
+        fallbackTimerRef.current = null;
+      }
+      setIsStreaming(false);
+      setLiveToast({
+        id: String(Date.now()),
+        message: 'Live Stream Paused',
+        subtext: `Stream paused at commuter ${streamStep}/${streamTotal}.`,
+      });
+      return;
+    }
+
+    // Start streaming
+    setIsStreaming(true);
+    setStreamStep(0);
+    setActiveTab('pools');
+    setSelectedCluster(null);
+
+    // Reset current board
+    try {
+      await resetSimulation();
+    } catch (e) {
+      console.warn('Reset error before stream:', e);
+    }
+    setRequests([]);
+    setClusters([]);
+    setTotalFareSavedRs(0);
+
+    setLiveToast({
+      id: String(Date.now()),
+      message: '🔴 Live Stream Connected',
+      subtext: 'Incoming commuters arriving every 2.5s with real-time graph re-clustering...',
+    });
+
+    if (isBackendLive) {
+      const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+      const es = new EventSource(`${API_BASE}/api/simulation/stream`);
+      eventSourceRef.current = es;
+
+      es.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.requests) setRequests(data.requests);
+          if (data.clusters) setClusters(data.clusters);
+          if (typeof data.executionTimeMs === 'number') setLatencyMs(data.executionTimeMs);
+          if (typeof data.totalFareSavedRs === 'number') setTotalFareSavedRs(data.totalFareSavedRs);
+          if (data.step) setStreamStep(data.step);
+          if (data.totalSteps) setStreamTotal(data.totalSteps);
+
+          if (data.latestRider) {
+            const matchedPool = (data.clusters as MatchCluster[])?.find((c) =>
+              c.riders?.some((r) => r.userId === data.latestRider.userId)
+            );
+            const matchMsg =
+              matchedPool && matchedPool.riders.length > 1
+                ? `matched into Pool ${matchedPool.clusterId} (${matchedPool.savingsPercentage}% Saved)!`
+                : 'added to pool (Solo Request)';
+
+            setLiveToast({
+              id: String(Date.now()),
+              message: `New request: ${data.latestRider.studentName} (${data.latestRider.sourceNodeId} → ${data.latestRider.destinationNodeId})`,
+              subtext: `${matchMsg} · Progress: ${data.step}/${data.totalSteps || 15}`,
+            });
+          }
+
+          if (data.step >= (data.totalSteps || 15)) {
+            es.close();
+            eventSourceRef.current = null;
+            setIsStreaming(false);
+            setLiveToast({
+              id: String(Date.now()),
+              message: '⚡ Stream Complete!',
+              subtext: `All 15 commuters dispatched and matched. Total Fare Saved: ₹${data.totalFareSavedRs}`,
+            });
+          }
+        } catch (err) {
+          console.error('Error parsing SSE event payload:', err);
+        }
+      };
+
+      es.onerror = (err) => {
+        console.warn('SSE stream closed or error:', err);
+        es.close();
+        eventSourceRef.current = null;
+        setIsStreaming(false);
+      };
+    } else {
+      // Standalone client fallback simulator (2.5s interval)
+      const seeded = buildSeededRequests(peakMode);
+      runningFallbackReqsRef.current = [];
+      let currentIdx = 0;
+
+      fallbackTimerRef.current = setInterval(() => {
+        if (currentIdx >= seeded.length) {
+          if (fallbackTimerRef.current) clearInterval(fallbackTimerRef.current);
+          fallbackTimerRef.current = null;
+          setIsStreaming(false);
+          setLiveToast({
+            id: String(Date.now()),
+            message: '⚡ Stream Complete (Client Mode)!',
+            subtext: 'All 15 mock commuters matched along the corridor.',
+          });
+          return;
+        }
+
+        const rider = seeded[currentIdx];
+        runningFallbackReqsRef.current = [...runningFallbackReqsRef.current, rider];
+        currentIdx++;
+        setStreamStep(currentIdx);
+
+        const updatedReqs = runningFallbackReqsRef.current;
+        const newClusters = matchRides(updatedReqs, peakMode);
+        const fareSaved = newClusters
+          .filter((c) => c.riders.length > 1)
+          .reduce(
+            (s, c) =>
+              s + c.originalTotalFareRs - c.discountedFarePerPersonRs * c.riders.length,
+            0
+          );
+
+        setRequests(updatedReqs);
+        setClusters(newClusters);
+        setTotalFareSavedRs(Math.round(fareSaved * 100) / 100);
+
+        const matchedPool = newClusters.find((c) =>
+          c.riders.some((r) => r.userId === rider.userId)
+        );
+        const matchMsg =
+          matchedPool && matchedPool.riders.length > 1
+            ? `matched into Pool ${matchedPool.clusterId} (${matchedPool.savingsPercentage}% Saved)!`
+            : 'added to pool (Solo Request)';
+
+        setLiveToast({
+          id: String(Date.now()),
+          message: `New request: ${rider.studentName} (${rider.sourceNodeId} → ${rider.destinationNodeId})`,
+          subtext: `${matchMsg} · Progress: ${currentIdx}/15`,
+        });
+      }, 2500);
+    }
+  }, [isStreaming, isBackendLive, peakMode, streamStep, streamTotal]);
+
+  // Reset Simulation Board
+  const handleResetBoard = useCallback(async () => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+    if (fallbackTimerRef.current) {
+      clearInterval(fallbackTimerRef.current);
+      fallbackTimerRef.current = null;
+    }
+    setIsStreaming(false);
+    setStreamStep(0);
+
+    try {
+      await resetSimulation();
+    } catch (e) {
+      console.warn('Reset error:', e);
+    }
+
+    setRequests([]);
+    setClusters([]);
+    setLatencyMs(0);
+    setTotalFareSavedRs(0);
+    setSelectedCluster(null);
+    setLastSnapInfo(null);
+
+    setLiveToast({
+      id: String(Date.now()),
+      message: 'Simulation Reset',
+      subtext: 'Active commuter pool cleared (DELETE /api/simulation/reset). Board is clean.',
+    });
+  }, []);
 
   // Submit custom ride request with Haversine GPS snapping
   const handleRequestRide = useCallback(
@@ -252,13 +506,14 @@ export default function DashboardPage() {
       className="flex flex-col h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 select-none"
       suppressHydrationWarning
     >
-      {/* 1. Top Navigation Bar */}
+      {/* 1. Top Navigation Bar with Live Weather */}
       <Navbar
         peakMode={peakMode}
         onTogglePeakMode={handleTogglePeakMode}
         isBackendLive={isBackendLive}
         isTogglingPeak={isTogglingPeak}
         activePoolCount={activePoolCount}
+        weather={weather}
       />
 
       {/* 2. Main Split-Screen Workspace */}
@@ -275,19 +530,50 @@ export default function DashboardPage() {
               peakMode={peakMode}
             />
 
-            {/* Primary Hero Button: Populate 15 Mock Commuters */}
-            <div className="relative group">
-              <div className="absolute -inset-0.5 bg-gradient-to-r from-emerald-500 to-cyan-500 rounded-2xl blur opacity-40 group-hover:opacity-80 transition duration-300"></div>
+            {/* High-Tech Commuter Stream & Seeding Action Bar */}
+            <div className="flex items-center gap-2">
+              {/* Populate 15 Mock Commuters */}
               <button
                 type="button"
                 onClick={handleSeedSimulation}
-                disabled={isSeeding}
-                className="relative w-full py-3.5 px-4 rounded-xl font-bold text-sm tracking-wide bg-gradient-to-r from-emerald-500 via-emerald-600 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 shadow-xl shadow-emerald-900/40 flex items-center justify-center space-x-2.5 transition active:scale-[0.99] disabled:opacity-50 disabled:cursor-wait"
+                disabled={isSeeding || isStreaming}
+                className="flex-1 py-3 px-3 rounded-xl font-bold text-xs tracking-wide bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 shadow-lg shadow-emerald-950/40 flex items-center justify-center space-x-1.5 transition active:scale-[0.99] disabled:opacity-50"
               >
-                <Zap className={`w-4 h-4 fill-slate-950 ${isSeeding ? 'animate-bounce' : ''}`} />
-                <span>
-                  {isSeeding ? 'Populating Commuter Graph...' : 'Populate 15 Mock Commuters (4:00 PM Peak)'}
-                </span>
+                <Zap className={`w-3.5 h-3.5 fill-slate-950 ${isSeeding ? 'animate-bounce' : ''}`} />
+                <span>{isSeeding ? 'Populating...' : '⚡ Populate 15'}</span>
+              </button>
+
+              {/* Live SSE Stream Mode Toggle */}
+              <button
+                type="button"
+                onClick={handleToggleStream}
+                className={`py-3 px-3.5 rounded-xl font-bold text-xs tracking-wide flex items-center space-x-2 transition active:scale-[0.99] border ${
+                  isStreaming
+                    ? 'bg-rose-950 text-rose-300 border-rose-500 shadow-lg shadow-rose-950/50 animate-pulse'
+                    : 'bg-slate-900 hover:bg-slate-800 text-slate-200 border-slate-700/80 shadow-md'
+                }`}
+                title={
+                  isStreaming
+                    ? 'Stop live commuter stream'
+                    : 'Connect to live SSE stream (commuters arrive every 2.5s and re-cluster in real-time)'
+                }
+              >
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    isStreaming ? 'bg-rose-500 animate-ping' : 'bg-rose-500'
+                  }`}
+                />
+                <span>{isStreaming ? `Streaming (${streamStep}/15)` : '🔴 Live Stream Mode'}</span>
+              </button>
+
+              {/* Reset Board Button (DELETE /api/simulation/reset) */}
+              <button
+                type="button"
+                onClick={handleResetBoard}
+                className="p-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-rose-400 border border-slate-800 hover:border-slate-700 transition shadow-md active:scale-95"
+                title="Reset simulation and clear active pool board (DELETE /api/simulation/reset)"
+              >
+                <RotateCcw className="w-4 h-4" />
               </button>
             </div>
 
@@ -379,6 +665,32 @@ export default function DashboardPage() {
           />
         </main>
       </div>
+
+      {/* Floating Real-Time Toast Notification */}
+      {liveToast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[3000] max-w-lg w-[90%] bg-slate-900/95 border border-emerald-500/70 rounded-2xl p-3.5 shadow-2xl backdrop-blur-xl flex items-start space-x-3 text-xs animate-slideUp">
+          <div className="w-8 h-8 rounded-xl bg-emerald-950/90 border border-emerald-700/60 flex items-center justify-center flex-shrink-0 text-emerald-400">
+            <Radio className="w-4 h-4 animate-pulse" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="font-bold text-slate-100 flex items-center gap-1.5">
+              <span>{liveToast.message}</span>
+            </div>
+            {liveToast.subtext && (
+              <p className="text-[11px] text-emerald-300 font-mono mt-0.5 truncate">
+                {liveToast.subtext}
+              </p>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => setLiveToast(null)}
+            className="text-slate-500 hover:text-slate-300 transition"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }

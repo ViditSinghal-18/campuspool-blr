@@ -72,3 +72,11 @@ export interface ToastMessage {
   type: 'success' | 'error' | 'info';
   message: string;
 }
+
+export interface WeatherTelemetry {
+  temperatureC: number;
+  precipitationMm: number;
+  isRaining: boolean;
+  conditionText: string;
+  recommendedSurgeMultiplier: number;
+}
