@@ -29,7 +29,7 @@ interface MapCanvasProps {
   clusterColors: string[];
 }
 
-const INITIAL_CENTER: [number, number] = [12.9480, 77.5550];
+const INITIAL_CENTER: [number, number] = [12.9520, 77.5600];
 const CONGESTED_NODES = new Set(['NAYANDAHALLI', 'MYSORE_RD', 'MAJESTIC']);
 
 // Click listener inside Leaflet context
@@ -59,10 +59,17 @@ function MapClickHandler({
 function InitialBoundsFitter({ nodes }: { nodes: TransitNode[] }) {
   const map = useMap();
   useEffect(() => {
+    map.invalidateSize();
     if (nodes && nodes.length > 0) {
       const bounds = L.latLngBounds(nodes.map((n) => [n.lat, n.lng]));
-      map.fitBounds(bounds, { padding: [55, 55], maxZoom: 13, animate: false });
+      map.fitBounds(bounds, { padding: [50, 50], maxZoom: 12, animate: false });
+    } else {
+      map.setView([12.9520, 77.5600], 12);
     }
+    const timer = setTimeout(() => {
+      map.invalidateSize();
+    }, 200);
+    return () => clearTimeout(timer);
   }, [map, nodes]);
   return null;
 }
@@ -224,13 +231,14 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
         center={INITIAL_CENTER}
         zoom={12}
         scrollWheelZoom={true}
+        zoomControl={false}
+        attributionControl={false}
         className="w-full h-full"
+        style={{ width: '100%', height: '100%' }}
       >
-        {/* OpenStreetMap Dark Navy Filtered Tiles */}
         <TileLayer
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-          maxZoom={19}
+          attribution="© OpenStreetMap"
         />
 
         {/* Fits bounds on initial load so RVCE, Kengeri, Majestic, and Indiranagar fit cleanly */}
@@ -332,6 +340,7 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
         {/* 3. Bengaluru Transit Hubs (11 Nodes) */}
         {nodes.map((node) => {
           const isRVCE = node.id === 'RVCE';
+          const isPattanagere = node.id === 'PATTANAGERE' || node.name.toLowerCase().includes('pattanagere');
           const isCongested = peakMode && CONGESTED_NODES.has(node.id);
 
           return (
@@ -356,8 +365,8 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
             >
               <Tooltip
                 permanent
-                direction="top"
-                offset={[0, -10]}
+                direction={isPattanagere ? 'bottom' : 'top'}
+                offset={isPattanagere ? [0, 10] : [0, -10]}
                 opacity={0.95}
                 className="custom-map-tooltip font-sans"
               >
@@ -373,11 +382,6 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
                   >
                     {node.name}
                   </span>
-                  {isRVCE && (
-                    <span className="text-[9px] bg-emerald-950 text-emerald-300 px-1 py-0.5 rounded border border-emerald-700/60 font-mono">
-                      RVCE
-                    </span>
-                  )}
                   {isCongested && (
                     <span className="text-[9px] bg-amber-950 text-amber-300 px-1 py-0.5 rounded border border-amber-700/60 font-mono">
                       1.4x
