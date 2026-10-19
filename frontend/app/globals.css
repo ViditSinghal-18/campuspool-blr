@@ -33,7 +33,11 @@ html {
 }
 
 body {
-  background-color: var(--obsidian);
+  background-color: #050807;
+  background-image:
+    radial-gradient(ellipse 65% 55% at 10% 15%, rgba(0, 96, 57, 0.13) 0%, transparent 60%),
+    radial-gradient(ellipse 65% 55% at 90% 85%, rgba(212, 175, 55, 0.11) 0%, transparent 60%);
+  background-attachment: fixed;
   color: var(--ivory);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;

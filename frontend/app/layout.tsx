@@ -21,10 +21,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           rel="stylesheet"
         />
       </head>
-      <body suppressHydrationWarning>
+      <body suppressHydrationWarning className="relative min-h-screen">
         <PoolProvider>
           <Navbar />
-          <main>{children}</main>
+          <main className="relative z-10">{children}</main>
           <ToastStack />
         </PoolProvider>
       </body>

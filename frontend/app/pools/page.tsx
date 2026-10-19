@@ -1,26 +1,28 @@
 'use client';
 
-import { useState, useRef, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import Link from 'next/link';
 import { usePool } from '../../context/PoolContext';
 import type { MatchCluster } from '../../lib/types';
 import { Users, MapPin, Zap, TrendingDown, RefreshCw, Radio, ArrowRight } from 'lucide-react';
+import TiltCard3D from '../../components/TiltCard3D';
 
-// ─── Tilt hook ────────────────────────────────────────────────────────────────
-function useTilt(strength = 12) {
-  const ref = useRef<HTMLDivElement>(null);
-  const onMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    const el = ref.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / rect.width  - 0.5;
-    const y = (e.clientY - rect.top)  / rect.height - 0.5;
-    el.style.transform = `perspective(800px) rotateY(${x * strength}deg) rotateX(${-y * strength}deg) scale(1.02)`;
-  };
-  const onMouseLeave = () => {
-    if (ref.current) ref.current.style.transform = 'perspective(800px) rotateY(0deg) rotateX(0deg) scale(1)';
-  };
-  return { ref, onMouseMove, onMouseLeave };
+// ─── Destination Banner Image Map ─────────────────────────────────────────────
+function getDestinationBanner(nodeName: string): string {
+  const n = (nodeName || '').toLowerCase();
+  if (n.includes('majestic')) {
+    return 'https://images.unsplash.com/photo-1509198397868-475647b2a1e5?auto=format&fit=crop&w=800&q=80';
+  }
+  if (n.includes('mg_road') || n.includes('mg road') || n.includes('indiranagar')) {
+    return 'https://images.unsplash.com/photo-1519501025264-65ba15a82390?auto=format&fit=crop&w=800&q=80';
+  }
+  if (n.includes('vijayanagar') || n.includes('mysore')) {
+    return 'https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?auto=format&fit=crop&w=800&q=80';
+  }
+  if (n.includes('banashankari') || n.includes('jayanagar')) {
+    return 'https://images.unsplash.com/photo-1515694346937-94d85e41e6f0?auto=format&fit=crop&w=800&q=80';
+  }
+  return 'https://images.unsplash.com/photo-1494526585095-c41746248156?auto=format&fit=crop&w=800&q=80';
 }
 
 // ─── Metro Stepper ────────────────────────────────────────────────────────────
@@ -46,102 +48,145 @@ function MetroStepper({ nodeIds }: { nodeIds: string[] }) {
 const PALETTE = ['#10b981', '#d4af37', '#60a5fa', '#f472b6', '#a78bfa', '#fb923c'];
 
 function PoolCard({ cluster, idx, onInspect }: { cluster: MatchCluster; idx: number; onInspect: (c: MatchCluster) => void }) {
-  const tilt = useTilt(10);
   const color = PALETTE[idx % PALETTE.length];
   const savings = Math.round(cluster.originalTotalFareRs - cluster.discountedFarePerPersonRs * cluster.riders.length);
   const firstRider = cluster.riders[0];
   const cleanId = cluster.clusterId.replace(/^[A-Z]+-?/i, '').replace(/^-+/, '') || cluster.clusterId;
+  const bannerImage = getDestinationBanner(cluster.dropOffSplitNodeName);
 
   return (
-    <div
-      ref={tilt.ref}
-      onMouseMove={tilt.onMouseMove}
-      onMouseLeave={tilt.onMouseLeave}
-      className="glass rounded-2xl p-6 flex flex-col gap-4 cursor-default"
-      style={{ transformStyle: 'preserve-3d', transition: 'transform 0.15s ease, box-shadow 0.15s ease', borderTop: `2px solid ${color}40` }}
+    <TiltCard3D
+      maxTilt={10}
+      glareColor={`${color}22`}
+      className="glass rounded-2xl flex flex-col overflow-hidden cursor-default h-full"
+      style={{ borderTop: `2px solid ${color}60` }}
     >
-      {/* Header */}
-      <div className="flex items-start justify-between">
-        <div>
-          <div className="text-[9px] uppercase tracking-[0.2em] font-mono" style={{ color: 'var(--gold-dim)' }}>
-            POOL #{cleanId}
-          </div>
-          <div className="font-serif text-xl font-semibold mt-0.5" style={{ color: 'var(--ivory)' }}>
-            ₹{Math.round(cluster.discountedFarePerPersonRs)}
-            <span className="text-xs ml-1 font-normal" style={{ color: 'var(--ivory-dim)' }}>/person</span>
-          </div>
+      {/* Visual Destination Header Banner */}
+      <div className="relative h-28 w-full overflow-hidden">
+        <img
+          src={bannerImage}
+          alt={cluster.dropOffSplitNodeName}
+          className="h-full w-full object-cover transition-transform duration-500 hover:scale-105 brightness-[0.72]"
+        />
+        <div className="absolute inset-0 bg-gradient-to-t from-[var(--obsidian)] via-[var(--obsidian)]/40 to-transparent" />
+
+        {/* Destination Pill */}
+        <div
+          className="absolute top-2.5 left-3 flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[10px] font-mono font-medium backdrop-blur-md"
+          style={{ background: 'rgba(5,8,7,0.8)', border: '1px solid rgba(212,175,55,0.4)', color: 'var(--gold)' }}
+        >
+          <MapPin size={10} className="text-amber-400" />
+          <span>To {cluster.dropOffSplitNodeName}</span>
         </div>
-        <div className="text-right">
-          <div
-            className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold"
-            style={{ background: `${color}20`, color, border: `1px solid ${color}40` }}
-          >
-            <TrendingDown size={9} />
-            {cluster.savingsPercentage.toFixed(0)}% saved
-          </div>
-          <div className="mt-1 text-[10px]" style={{ color: 'var(--slate-light)' }}>
-            Solo: ₹{Math.round(cluster.originalTotalFareRs / Math.max(cluster.riders.length, 1))}
-          </div>
+
+        {/* Animated Avatar Stack */}
+        <div className="absolute bottom-2 right-3 flex items-center -space-x-2">
+          {cluster.riders.map((r, rIdx) => (
+            <div
+              key={r.userId}
+              className="relative flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-bold shadow-md transition-transform hover:scale-125 hover:z-20 cursor-pointer"
+              style={{
+                background: `linear-gradient(135deg, ${color}, #050807)`,
+                border: '2px solid rgba(5,8,7,0.9)',
+                color: '#ffffff',
+                zIndex: cluster.riders.length - rIdx,
+              }}
+              title={`${r.studentName} (${r.sourceNodeId} → ${r.destinationNodeId})`}
+            >
+              {r.studentName.charAt(0).toUpperCase()}
+            </div>
+          ))}
+          <span className="ml-3 text-[10px] font-mono text-emerald-400 font-semibold backdrop-blur-sm px-1.5 py-0.5 rounded bg-black/50 border border-emerald-900/60">
+            {cluster.riders.length} Pooled
+          </span>
         </div>
       </div>
 
-      {/* Stats row */}
-      <div className="grid grid-cols-3 gap-2 rounded-xl px-3 py-2" style={{ background: 'rgba(0,0,0,0.25)' }}>
-        <div className="text-center">
-          <div className="text-[10px]" style={{ color: 'var(--ivory-dim)' }}><Users size={10} className="inline mr-0.5" />Riders</div>
-          <div className="font-semibold text-sm" style={{ color: 'var(--ivory)' }}>{cluster.riders.length}</div>
-        </div>
-        <div className="text-center">
-          <div className="text-[10px]" style={{ color: 'var(--ivory-dim)' }}><MapPin size={10} className="inline mr-0.5" />Distance</div>
-          <div className="font-semibold text-sm" style={{ color: 'var(--ivory)' }}>{cluster.sharedDistanceKm.toFixed(1)} km</div>
-        </div>
-        <div className="text-center">
-          <div className="text-[10px]" style={{ color: 'var(--ivory-dim)' }}>₹ Saved</div>
-          <div className="font-semibold text-sm" style={{ color }}>{savings > 0 ? `+₹${savings}` : '—'}</div>
-        </div>
-      </div>
-
-      {/* Drop-off */}
-      <div className="text-xs" style={{ color: 'var(--ivory-dim)' }}>
-        <span className="mr-1" style={{ color: 'var(--gold-dim)' }}>Split at:</span>
-        <strong style={{ color: 'var(--ivory)' }}>{cluster.dropOffSplitNodeName}</strong>
-      </div>
-
-      {/* Metro stepper */}
-      <MetroStepper nodeIds={cluster.sharedCorridorNodeIds} />
-
-      {/* Riders */}
-      <div className="flex flex-wrap gap-1.5 mt-1">
-        {cluster.riders.map((r) => (
-          <div
-            key={r.userId}
-            className="flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px]"
-            style={{ background: 'rgba(90,107,96,0.18)', border: '1px solid rgba(90,107,96,0.28)', color: 'var(--ivory-dim)' }}
-          >
-            <span className="h-1.5 w-1.5 rounded-full" style={{ background: color }} />
-            {r.studentName.split(' ')[0]}
+      {/* Card Body */}
+      <div className="p-5 flex-1 flex flex-col gap-4">
+        {/* Header */}
+        <div className="flex items-start justify-between">
+          <div>
+            <div className="text-[9px] uppercase tracking-[0.2em] font-mono" style={{ color: 'var(--gold-dim)' }}>
+              POOL #{cleanId}
+            </div>
+            <div className="font-serif text-xl font-semibold mt-0.5" style={{ color: 'var(--ivory)' }}>
+              ₹{Math.round(cluster.discountedFarePerPersonRs)}
+              <span className="text-xs ml-1 font-normal" style={{ color: 'var(--ivory-dim)' }}>/person</span>
+            </div>
           </div>
-        ))}
-      </div>
-
-      {/* Departure window */}
-      {firstRider && (
-        <div className="text-[10px]" style={{ color: 'var(--slate-light)', fontFamily: 'var(--font-mono)' }}>
-          Departs ~{firstRider.departureTime.replace('T', ' ').slice(0, 16)}
+          <div className="text-right">
+            <div
+              className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold"
+              style={{ background: `${color}20`, color, border: `1px solid ${color}40` }}
+            >
+              <TrendingDown size={9} />
+              {cluster.savingsPercentage.toFixed(0)}% saved
+            </div>
+            <div className="mt-1 text-[10px]" style={{ color: 'var(--slate-light)' }}>
+              Solo: ₹{Math.round(cluster.originalTotalFareRs / Math.max(cluster.riders.length, 1))}
+            </div>
+          </div>
         </div>
-      )}
 
-      {/* Inspect button */}
-      <button
-        onClick={() => onInspect(cluster)}
-        className="mt-auto flex items-center justify-center gap-1.5 rounded-xl py-2.5 text-xs font-semibold uppercase tracking-wider transition-all hover:opacity-85"
-        style={{ background: `${color}18`, border: `1px solid ${color}35`, color }}
-      >
-        <MapPin size={11} />
-        Inspect on Radar
-        <ArrowRight size={11} />
-      </button>
-    </div>
+        {/* Stats row */}
+        <div className="grid grid-cols-3 gap-2 rounded-xl px-3 py-2" style={{ background: 'rgba(0,0,0,0.25)' }}>
+          <div className="text-center">
+            <div className="text-[10px]" style={{ color: 'var(--ivory-dim)' }}><Users size={10} className="inline mr-0.5" />Riders</div>
+            <div className="font-semibold text-sm" style={{ color: 'var(--ivory)' }}>{cluster.riders.length}</div>
+          </div>
+          <div className="text-center">
+            <div className="text-[10px]" style={{ color: 'var(--ivory-dim)' }}><MapPin size={10} className="inline mr-0.5" />Distance</div>
+            <div className="font-semibold text-sm" style={{ color: 'var(--ivory)' }}>{cluster.sharedDistanceKm.toFixed(1)} km</div>
+          </div>
+          <div className="text-center">
+            <div className="text-[10px]" style={{ color: 'var(--ivory-dim)' }}>₹ Saved</div>
+            <div className="font-semibold text-sm" style={{ color }}>{savings > 0 ? `+₹${savings}` : '—'}</div>
+          </div>
+        </div>
+
+        {/* Drop-off */}
+        <div className="text-xs" style={{ color: 'var(--ivory-dim)' }}>
+          <span className="mr-1" style={{ color: 'var(--gold-dim)' }}>Split at:</span>
+          <strong style={{ color: 'var(--ivory)' }}>{cluster.dropOffSplitNodeName}</strong>
+        </div>
+
+        {/* Metro stepper */}
+        <MetroStepper nodeIds={cluster.sharedCorridorNodeIds} />
+
+        {/* Riders */}
+        <div className="flex flex-wrap gap-1.5 mt-1">
+          {cluster.riders.map((r) => (
+            <div
+              key={r.userId}
+              className="flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px]"
+              style={{ background: 'rgba(90,107,96,0.18)', border: '1px solid rgba(90,107,96,0.28)', color: 'var(--ivory-dim)' }}
+            >
+              <span className="h-1.5 w-1.5 rounded-full" style={{ background: color }} />
+              {r.studentName.split(' ')[0]}
+            </div>
+          ))}
+        </div>
+
+        {/* Departure window */}
+        {firstRider && (
+          <div className="text-[10px]" style={{ color: 'var(--slate-light)', fontFamily: 'var(--font-mono)' }}>
+            Departs ~{firstRider.departureTime.replace('T', ' ').slice(0, 16)}
+          </div>
+        )}
+
+        {/* Inspect button */}
+        <button
+          onClick={() => onInspect(cluster)}
+          className="mt-auto flex items-center justify-center gap-1.5 rounded-xl py-2.5 text-xs font-semibold uppercase tracking-wider transition-all hover:opacity-85"
+          style={{ background: `${color}18`, border: `1px solid ${color}35`, color }}
+        >
+          <MapPin size={11} />
+          Inspect on Radar
+          <ArrowRight size={11} />
+        </button>
+      </div>
+    </TiltCard3D>
   );
 }
 
