@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { usePool } from '../context/PoolContext';
+import { API_BASE } from '../lib/api';
 import { ExternalLink, CloudRain, Sun, CloudSnow, Zap, Activity } from 'lucide-react';
 
 const NAV_LINKS = [
@@ -120,12 +121,12 @@ export default function Navbar() {
         {/* Backend status */}
         <div className="flex items-center gap-1.5 text-[10px] shrink-0" style={{ color: 'var(--slate-light)' }}>
           <Activity size={11} style={{ color: isBackendLive ? 'var(--emerald-glow)' : '#f59e0b' }} />
-          <span className="hidden xl:inline">{isBackendLive ? 'Live API' : 'Fallback'}</span>
+          <span className="hidden sm:inline">{isBackendLive ? 'Live API' : 'Demo mode'}</span>
         </div>
 
         {/* API Docs */}
         <a
-          href="http://localhost:8080/swagger-ui.html"
+          href={`${API_BASE}/swagger-ui.html`}
           target="_blank"
           rel="noopener noreferrer"
           className="hidden lg:flex items-center gap-1 rounded-lg px-2.5 sm:px-3 py-1.5 text-xs font-medium transition-all duration-200 hover:opacity-80 shrink-0"

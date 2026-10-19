@@ -15,6 +15,7 @@ import type {
   WeatherTelemetry,
 } from '../lib/types';
 import {
+  API_BASE,
   fetchGraph,
   fetchWeatherTelemetry,
   resetSimulation,
@@ -320,11 +321,13 @@ export function PoolProvider({ children }: { children: React.ReactNode }) {
       addToast('info', '🔴 Live stream disconnected.');
       return;
     }
+    if (!API_BASE && process.env.NODE_ENV !== 'development') {
+      addToast('info', 'Live stream unavailable in Demo mode.');
+      return;
+    }
     setIsStreaming(true);
     addToast('info', '🔴 Live stream active — commuters arriving every 2.5 s…');
-    const sse = new EventSource(
-      `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'}/api/simulation/stream`,
-    );
+    const sse = new EventSource(`${API_BASE}/api/simulation/stream`);
     sseRef.current = sse;
     sse.onmessage = (e) => {
       try {

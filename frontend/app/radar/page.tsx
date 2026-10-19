@@ -4,6 +4,7 @@ import { useState, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { usePool } from '../../context/PoolContext';
+import { API_BASE } from '../../lib/api';
 import { Zap, Radio, RefreshCw, ExternalLink, ChevronRight, Users, MapPin, TrendingDown, X } from 'lucide-react';
 
 // SSR-disabled radar map
@@ -194,7 +195,7 @@ export default function RadarPage() {
           {isBackendLive ? 'Spring Boot API · Live' : 'Client Fallback Engine'}
           <span className="opacity-50">·</span>
           <a
-            href="http://localhost:8080/swagger-ui.html"
+            href={`${API_BASE}/swagger-ui.html`}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-0.5 hover:opacity-80"

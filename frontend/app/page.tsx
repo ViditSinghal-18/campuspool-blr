@@ -5,6 +5,7 @@ import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { motion, useScroll, useTransform, useInView, useReducedMotion } from 'framer-motion';
 import { usePool } from '../context/PoolContext';
+import { API_BASE } from '../lib/api';
 import { ArrowRight, MapPin, Users, Zap, TrendingDown, ExternalLink, Compass, ShieldCheck, Sparkles } from 'lucide-react';
 import TiltCard3D from '../components/TiltCard3D';
 
@@ -686,7 +687,7 @@ export default function HomePage() {
             <span>© 2026 CampusPool BLR · RVCE CSE · Bengaluru, Karnataka</span>
             <div className="flex items-center gap-4">
               <a
-                href="http://localhost:8080/swagger-ui.html"
+                href={`${API_BASE}/swagger-ui.html`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="flex items-center gap-1 hover:opacity-80 transition-opacity"
