@@ -224,9 +224,10 @@ public class IntervalMatcherService {
                                       List<RideRequest> riders,
                                       List<String> corridor) {
         double sharedDistKm = graphEngine.pathDistance(corridor);
-        double sharedFare   = graphEngine.soloFare(sharedDistKm);
+        double sharedSegmentFare = graphEngine.soloFare(sharedDistKm);
         int    n            = riders.size();
-        double perPerson    = Math.ceil(sharedFare / n);
+        double sharedShare  = (n > 0) ? (sharedSegmentFare / n) : 0.0;
+        double perPerson    = Math.round(sharedShare * 100.0) / 100.0;
 
         String splitNodeId   = corridor.get(corridor.size() - 1);
         TransitNode splitNode = graphEngine.getNode(splitNodeId);
@@ -234,11 +235,39 @@ public class IntervalMatcherService {
 
         double originalTotal = riders.stream()
                 .mapToDouble(RideRequest::soloFareRs).sum();
-        double avgSoloFare   = originalTotal / n;
 
-        int savingsPct = (avgSoloFare > 0)
-                ? Math.max(0, (int) Math.round((1.0 - perPerson / avgSoloFare) * 100))
-                : 0;
+        double totalRiderSavingsPct = 0.0;
+        for (RideRequest r : riders) {
+            double soloFare = r.soloFareRs();
+            double remainingFare = 0.0;
+
+            if (!splitNodeId.equals(r.destinationNodeId())) {
+                List<String> path = r.computedPath();
+                int splitIdx = (path != null) ? path.indexOf(splitNodeId) : -1;
+                if (splitIdx >= 0 && splitIdx < path.size() - 1) {
+                    List<String> remainingPath = path.subList(splitIdx, path.size());
+                    double remainingDistKm = graphEngine.pathDistance(remainingPath);
+                    if (remainingDistKm > 0) {
+                        remainingFare = graphEngine.soloFare(remainingDistKm);
+                    }
+                } else {
+                    List<String> remainingPath = graphEngine.shortestPath(splitNodeId, r.destinationNodeId());
+                    double remainingDistKm = graphEngine.pathDistance(remainingPath);
+                    if (remainingDistKm > 0) {
+                        remainingFare = graphEngine.soloFare(remainingDistKm);
+                    }
+                }
+            }
+
+            double pooledTotal = sharedShare + remainingFare;
+            double riderSavingsPct = (soloFare > 0)
+                    ? Math.max(0.0, ((soloFare - pooledTotal) / soloFare) * 100.0)
+                    : 0.0;
+            totalRiderSavingsPct += riderSavingsPct;
+        }
+
+        double avgSavingsPct = (n > 0) ? (totalRiderSavingsPct / n) : 0.0;
+        int savingsPercentage = (int) Math.round(avgSavingsPct);
 
         return new MatchCluster(
                 clusterId,
@@ -248,7 +277,7 @@ public class IntervalMatcherService {
                 Math.round(sharedDistKm * 100.0) / 100.0,
                 Math.round(originalTotal * 100.0) / 100.0,
                 perPerson,
-                savingsPct
+                savingsPercentage
         );
     }
 

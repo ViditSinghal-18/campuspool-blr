@@ -22,7 +22,149 @@ import {
   snapAndRequestRide,
   toggleTrafficMode,
 } from '../lib/api';
-import { NODES as FALLBACK_NODES } from '../lib/fallbackEngine';
+import { NODES as FALLBACK_NODES, GRAPH_EDGES } from '../lib/fallbackEngine';
+
+// ─── Default Initial Weather Telemetry ─────────────────────────────────────────
+const DEFAULT_WEATHER: WeatherTelemetry = {
+  temperatureC: 28.0,
+  precipitationMm: 0.0,
+  isRaining: false,
+  conditionText: 'Clear sky (Normal)',
+  recommendedSurgeMultiplier: 1.0,
+};
+
+// ─── Edge Distance Map for Exact Corridor & Remaining Leg Geometry ────────────
+const edgeDistMap = new Map<string, number>();
+GRAPH_EDGES.forEach(([u, v, dist]) => {
+  edgeDistMap.set(`${u}|${v}`, dist);
+  edgeDistMap.set(`${v}|${u}`, dist);
+});
+
+export function computePathDistance(path: string[]): number {
+  if (!path || path.length < 2) return 0;
+  let total = 0;
+  for (let i = 0; i < path.length - 1; i++) {
+    total += edgeDistMap.get(`${path[i]}|${path[i + 1]}`) || 0;
+  }
+  return Math.round(total * 100) / 100;
+}
+
+export function computeSoloFare(distanceKm: number): number {
+  return Math.round(Math.max(16.0 * distanceKm, 30.0));
+}
+
+export interface RiderFareBreakdown {
+  soloFare: number;
+  sharedShare: number;
+  remainingFare: number;
+  pooledTotal: number;
+  savingsPct: number;
+  dropHub: string;
+  sharedKm: string;
+  destination: string;
+}
+
+/**
+ * Calculates the exact rider-specific pool fare breakdown:
+ * soloFare = fare(source to destination)
+ * sharedShare = sharedSegmentFare / groupSize
+ * remainingFare = fare from where shared segment ends to destination (0 if ends at destination)
+ * pooledTotal = sharedShare + remainingFare
+ * savings % = (soloFare - pooledTotal) / soloFare, floored at 0
+ */
+export function getRiderFareBreakdown(
+  rider: RideRequest,
+  cluster: MatchCluster
+): RiderFareBreakdown {
+  const soloFare = Math.round(rider.soloFareRs);
+  const n = Math.max(1, cluster.riders.length);
+  const sharedDistKm = cluster.sharedDistanceKm;
+  const sharedSegmentFare = computeSoloFare(sharedDistKm);
+  const sharedShare = Math.round(sharedSegmentFare / n);
+
+  const splitNodeId = cluster.sharedCorridorNodeIds?.[cluster.sharedCorridorNodeIds.length - 1];
+  let remainingFare = 0;
+
+  if (splitNodeId && splitNodeId !== rider.destinationNodeId) {
+    const path = rider.computedPath || [];
+    const splitIdx = path.indexOf(splitNodeId);
+    if (splitIdx >= 0 && splitIdx < path.length - 1) {
+      const remainingPath = path.slice(splitIdx);
+      const remainingDist = computePathDistance(remainingPath);
+      if (remainingDist > 0) {
+        remainingFare = computeSoloFare(remainingDist);
+      }
+    }
+  }
+
+  const pooledTotal = sharedShare + remainingFare;
+  const savingsPct = soloFare > 0
+    ? Math.max(0, Math.round(((soloFare - pooledTotal) / soloFare) * 100))
+    : 0;
+
+  const destNode = FALLBACK_NODES[rider.destinationNodeId];
+  const destination = destNode ? destNode.name : rider.destinationNodeId;
+
+  return {
+    soloFare,
+    sharedShare,
+    remainingFare,
+    pooledTotal,
+    savingsPct,
+    dropHub: cluster.dropOffSplitNodeName,
+    sharedKm: sharedDistKm.toFixed(1),
+    destination,
+  };
+}
+
+/**
+ * Recalculates cluster savings using the exact formula across all riders in the cluster:
+ * Cluster savings = average over riders of ((soloFare - pooledTotal) / soloFare), floored at 0.
+ */
+export function recalculateClusterSavings(cluster: MatchCluster): MatchCluster {
+  if (!cluster.riders || cluster.riders.length === 0) return cluster;
+
+  const n = cluster.riders.length;
+  const sharedDistKm = cluster.sharedDistanceKm;
+  const sharedSegmentFare = computeSoloFare(sharedDistKm);
+  const sharedShare = sharedSegmentFare / n;
+
+  const splitNodeId = cluster.sharedCorridorNodeIds?.[cluster.sharedCorridorNodeIds.length - 1];
+
+  let totalRiderSavingsPct = 0;
+  for (const rider of cluster.riders) {
+    const soloFare = rider.soloFareRs;
+    let remainingFare = 0;
+
+    if (splitNodeId && splitNodeId !== rider.destinationNodeId) {
+      const path = rider.computedPath || [];
+      const splitIdx = path.indexOf(splitNodeId);
+      if (splitIdx >= 0 && splitIdx < path.length - 1) {
+        const remainingPath = path.slice(splitIdx);
+        const remainingDist = computePathDistance(remainingPath);
+        if (remainingDist > 0) {
+          remainingFare = computeSoloFare(remainingDist);
+        }
+      }
+    }
+
+    const pooledTotal = sharedShare + remainingFare;
+    const riderSavingsPct = soloFare > 0
+      ? Math.max(0, ((soloFare - pooledTotal) / soloFare) * 100)
+      : 0;
+
+    totalRiderSavingsPct += riderSavingsPct;
+  }
+
+  const avgSavingsPct = totalRiderSavingsPct / n;
+  const savingsPercentage = Math.round(avgSavingsPct);
+
+  return {
+    ...cluster,
+    discountedFarePerPersonRs: Math.round(sharedShare),
+    savingsPercentage,
+  };
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -74,8 +216,9 @@ export function PoolProvider({ children }: { children: React.ReactNode }) {
   const [requests, setRequests] = useState<RideRequest[]>([]);
   const [clusters, setClusters] = useState<MatchCluster[]>([]);
   const [isBackendLive, setIsBackendLive] = useState(false);
+  // Peak mode defaults to OFF (false) on first load
   const [peakMode, setPeakMode] = useState(false);
-  const [weather, setWeather] = useState<WeatherTelemetry | null>(null);
+  const [weather, setWeather] = useState<WeatherTelemetry | null>(DEFAULT_WEATHER);
   const [isStreaming, setIsStreaming] = useState(false);
   const [isSeeding, setIsSeeding] = useState(false);
   const [selectedCluster, setSelectedCluster] = useState<MatchCluster | null>(null);
@@ -102,7 +245,11 @@ export function PoolProvider({ children }: { children: React.ReactNode }) {
       const { data, isLive } = await fetchGraph();
       setNodes(data.nodes);
       setIsBackendLive(isLive);
-      setPeakMode(data.peakMode);
+      // Ensure Peak Traffic mode defaults to OFF on first load
+      setPeakMode(false);
+      if (isLive && data.peakMode) {
+        await toggleTrafficMode(false);
+      }
     })();
     refreshWeather();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -121,7 +268,7 @@ export function PoolProvider({ children }: { children: React.ReactNode }) {
     try {
       const { data, isLive } = await seedSimulation(peakMode);
       setRequests(data.requests);
-      setClusters(data.clusters);
+      setClusters((data.clusters || []).map(recalculateClusterSavings));
       setIsBackendLive(isLive);
       addToast(
         'success',
@@ -152,7 +299,7 @@ export function PoolProvider({ children }: { children: React.ReactNode }) {
       try {
         const { data, isLive } = await snapAndRequestRide({ ...params, peakMode });
         setRequests(data.requests);
-        setClusters(data.clusters);
+        setClusters((data.clusters || []).map(recalculateClusterSavings));
         setIsBackendLive(isLive);
         addToast(
           'success',
@@ -183,7 +330,7 @@ export function PoolProvider({ children }: { children: React.ReactNode }) {
       try {
         const data = JSON.parse(e.data) as { requests: RideRequest[]; clusters: MatchCluster[] };
         setRequests(data.requests);
-        setClusters(data.clusters);
+        setClusters((data.clusters || []).map(recalculateClusterSavings));
         setIsBackendLive(true);
       } catch { /* ignore */ }
     };

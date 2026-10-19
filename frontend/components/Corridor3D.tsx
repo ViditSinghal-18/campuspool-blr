@@ -2,7 +2,7 @@
 
 import React, { useRef, useMemo, useState } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls, Html, Line, Stars, Sparkles } from '@react-three/drei';
+import { OrbitControls, Billboard, Text, Line, Stars, Sparkles } from '@react-three/drei';
 import * as THREE from 'three';
 
 // ─── Interfaces ───────────────────────────────────────────────────────────────
@@ -305,28 +305,21 @@ function NetworkScene({
               />
             </mesh>
 
-            {/* Small 11px semi-transparent dark glass pill with white text & distanceFactor */}
-            {isLabelVisible && (
-              <Html
-                position={[0, 0.44, 0]}
-                center
-                distanceFactor={14}
-                className="pointer-events-none select-none transition-opacity duration-200"
+            {/* Billboard text label */}
+            <Billboard>
+              <Text
+                fontSize={0.32}
+                color="#ffffff"
+                outlineWidth={0.03}
+                outlineColor="#050807"
+                anchorY="bottom"
+                position={[0, 0.5, 0]}
+                fillOpacity={isLabelVisible ? 1 : 0}
+                outlineOpacity={isLabelVisible ? 1 : 0}
               >
-                <div
-                  className="px-2.5 py-0.5 rounded-full font-sans font-medium whitespace-nowrap shadow-lg backdrop-blur-md"
-                  style={{
-                    fontSize: '11px',
-                    background: 'rgba(5, 8, 7, 0.75)',
-                    border: '1px solid rgba(255, 255, 255, 0.18)',
-                    color: '#ffffff',
-                    boxShadow: '0 4px 14px rgba(0, 0, 0, 0.6)',
-                  }}
-                >
-                  {st.name}
-                </div>
-              </Html>
-            )}
+                {st.name}
+              </Text>
+            </Billboard>
           </group>
         );
       })}
@@ -339,14 +332,28 @@ function NetworkScene({
   );
 }
 
+const DEFAULT_EMPTY_EDGES: CorridorEdge[] = [];
+const DEFAULT_ACTIVE_CORRIDOR_IDS: string[] = [
+  'KENGERI',
+  'RVCE',
+  'RR_NAGAR',
+  'NAYANDAHALLI',
+  'MYSORE_RD',
+  'MAJESTIC',
+];
+
 // ─── Main Exported Corridor3D Component ──────────────────────────────────────
 export default function Corridor3D({
   stations,
-  edges = [],
-  activeCorridorIds = ['KENGERI', 'RVCE', 'RR_NAGAR', 'NAYANDAHALLI', 'MYSORE_RD', 'MAJESTIC'],
+  edges = DEFAULT_EMPTY_EDGES,
+  activeCorridorIds = DEFAULT_ACTIVE_CORRIDOR_IDS,
   className = '',
 }: Corridor3DProps) {
   const controlsRef = useRef<any>(null);
+
+  // Wrap stations and edges arrays in useMemo so they are not re-created every render
+  const memoizedStations = useMemo(() => stations, [stations]);
+  const memoizedEdges = useMemo(() => edges, [edges]);
 
   return (
     <div
@@ -377,8 +384,8 @@ export default function Corridor3D({
 
         {/* 3D Spatial Corridor Network */}
         <NetworkScene
-          stations={stations}
-          edges={edges}
+          stations={memoizedStations}
+          edges={memoizedEdges}
           activeCorridorIds={activeCorridorIds}
         />
 

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useState, useRef } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   MapContainer,
   TileLayer,
@@ -14,7 +14,7 @@ import {
 import L from 'leaflet';
 import { LatLng, MatchCluster, PickModeTarget, TransitNode } from '../lib/types';
 import { GRAPH_EDGES, NODES } from '../lib/fallbackEngine';
-import { MapPin, Navigation, Info, Zap, AlertTriangle } from 'lucide-react';
+import { MapPin, Zap, AlertTriangle } from 'lucide-react';
 
 interface MapCanvasProps {
   nodes: TransitNode[];
@@ -27,10 +27,210 @@ interface MapCanvasProps {
   pickedPickup: LatLng | null;
   pickedDropoff: LatLng | null;
   clusterColors: string[];
+  tiltMode?: boolean;
 }
 
 const INITIAL_CENTER: [number, number] = [12.9520, 77.5600];
 const CONGESTED_NODES = new Set(['NAYANDAHALLI', 'MYSORE_RD', 'MAJESTIC']);
+
+// Permanent tooltips shown only for these 5 hubs; others show on hover or zoom >= 13
+const PERMANENT_STATION_IDS = new Set([
+  'RVCE',
+  'MAJESTIC',
+  'INDIRANAGAR',
+  'KENGERI',
+  'BANASHANKARI',
+]);
+
+// ─── Edge Geometry Caches ─────────────────────────────────────────────────────
+// 1. Saved edge geometry loaded from /edge-geometry.json (pre-calculated high fidelity)
+const savedEdgeGeometryCache = new Map<string, [number, number][]>();
+let isSavedEdgeGeometryLoaded = false;
+
+// 2. Live OSRM edge geometry cache for pairs missing from the pre-calculated file
+const livePairGeometryCache = new Map<string, [number, number][]>();
+const livePairFailed = new Set<string>();
+const livePairInFlight = new Set<string>();
+
+/**
+ * Fetches real road geometry for a single edge pair from OSRM with retry once on failure.
+ * Coordinates are passed to OSRM in lng,lat order: `${node.lng},${node.lat}`.
+ */
+async function fetchPairOsrmWithRetry(
+  nodeA: TransitNode,
+  nodeB: TransitNode
+): Promise<[number, number][] | null> {
+  const url = `https://router.project-osrm.org/route/v1/driving/${nodeA.lng},${nodeA.lat};${nodeB.lng},${nodeB.lat}?overview=full&geometries=geojson`;
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+      if (!res.ok) {
+        throw new Error(`OSRM error status ${res.status}`);
+      }
+      const data = await res.json();
+      if (data.code === 'Ok' && data.routes?.[0]?.geometry?.coordinates?.length) {
+        const curvedCoords: [number, number][] = data.routes[0].geometry.coordinates.map(
+          ([lng, lat]: [number, number]) => [lat, lng]
+        );
+        return curvedCoords;
+      }
+      throw new Error(`OSRM returned code ${data.code}`);
+    } catch {
+      if (attempt === 1) {
+        await new Promise((r) => setTimeout(r, 350));
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Joins multiple consecutive coordinate segments into a single smooth polyline,
+ * omitting redundant duplicate junction coordinates.
+ */
+function joinPairGeometries(segments: [number, number][][]): [number, number][] {
+  const result: [number, number][] = [];
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    if (!seg || seg.length === 0) continue;
+    if (result.length === 0) {
+      result.push(...seg);
+    } else {
+      const last = result[result.length - 1];
+      const first = seg[0];
+      if (
+        last &&
+        first &&
+        Math.abs(last[0] - first[0]) < 1e-4 &&
+        Math.abs(last[1] - first[1]) < 1e-4
+      ) {
+        result.push(...seg.slice(1));
+      } else {
+        result.push(...seg);
+      }
+    }
+  }
+  return result;
+}
+
+/**
+ * Constructs a corridor's polyline by joining consecutive node pair geometries along its path.
+ * Checks savedEdgeGeometryCache first, then livePairGeometryCache, then straight line fallback.
+ * Reverses the coordinate array when the pair is stored in the opposite direction.
+ */
+function getCorridorGeometry(nodeIds: string[]): {
+  positions: [number, number][];
+  isFromOsrm: boolean;
+} {
+  if (!nodeIds || nodeIds.length < 2) {
+    return { positions: [], isFromOsrm: false };
+  }
+
+  const segments: [number, number][][] = [];
+  let allFromOsrm = true;
+
+  for (let i = 0; i < nodeIds.length - 1; i++) {
+    const u = nodeIds[i];
+    const v = nodeIds[i + 1];
+    const nu = NODES[u];
+    const nv = NODES[v];
+    if (!nu || !nv) continue;
+
+    const [a, b] = [u, v].sort();
+    const edgeKey = `${a}|${b}`;
+
+    let pairCoords: [number, number][] | null = null;
+    let fromOsrm = false;
+
+    // 1. Check saved edge geometry from file
+    if (savedEdgeGeometryCache.has(edgeKey)) {
+      const raw = savedEdgeGeometryCache.get(edgeKey)!;
+      pairCoords = u === a ? raw : [...raw].reverse();
+      fromOsrm = true;
+    }
+    // 2. Check live OSRM cache
+    else if (livePairGeometryCache.has(edgeKey)) {
+      const raw = livePairGeometryCache.get(edgeKey)!;
+      pairCoords = u === a ? raw : [...raw].reverse();
+      fromOsrm = true;
+    }
+    // 3. Fall back to straight line last
+    else {
+      pairCoords = [
+        [nu.lat, nu.lng],
+        [nv.lat, nv.lng],
+      ];
+      fromOsrm = false;
+    }
+
+    if (!fromOsrm) {
+      allFromOsrm = false;
+    }
+
+    segments.push(pairCoords);
+  }
+
+  const joined = joinPairGeometries(segments);
+  if (joined.length >= 2) {
+    return { positions: joined, isFromOsrm: allFromOsrm };
+  }
+
+  const straightCoords: [number, number][] = nodeIds
+    .map((id) => NODES[id])
+    .filter(Boolean)
+    .map((node) => [node.lat, node.lng]);
+
+  return { positions: straightCoords, isFromOsrm: false };
+}
+
+// ─── Map Resize Handler ───────────────────────────────────────────────────────
+// Invalidate size after mount, staggered ticks, and on window resize so tiles fill with no black bands
+function MapResizeHandler({ tiltMode }: { tiltMode?: boolean }) {
+  const map = useMap();
+
+  useEffect(() => {
+    // Immediate invalidation
+    map.invalidateSize();
+
+    // Staggered ticks to ensure DOM layout settles completely
+    const t1 = setTimeout(() => map.invalidateSize(), 100);
+    const t2 = setTimeout(() => map.invalidateSize(), 300);
+    const t3 = setTimeout(() => map.invalidateSize(), 600);
+
+    const handleResize = () => {
+      map.invalidateSize();
+    };
+
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
+      window.removeEventListener('resize', handleResize);
+    };
+  }, [map, tiltMode]);
+
+  return null;
+}
+
+// ─── Zoom Watcher ─────────────────────────────────────────────────────────────
+// Tracks map zoom level to dynamically display station tooltips when zoom >= 13
+function ZoomWatcher({ onZoomChange }: { onZoomChange: (zoom: number) => void }) {
+  const map = useMapEvents({
+    zoomend: () => {
+      onZoomChange(map.getZoom());
+    },
+  });
+
+  useEffect(() => {
+    onZoomChange(map.getZoom());
+  }, [map, onZoomChange]);
+
+  return null;
+}
 
 // Click listener inside Leaflet context
 function MapClickHandler({
@@ -55,7 +255,7 @@ function MapClickHandler({
   return null;
 }
 
-// Initial bounds fitter across all 11 transit hubs so RVCE, Kengeri, Majestic, and Indiranagar all fit cleanly
+// Initial bounds fitter across all 11 transit hubs
 function InitialBoundsFitter({ nodes }: { nodes: TransitNode[] }) {
   const map = useMap();
   useEffect(() => {
@@ -64,7 +264,7 @@ function InitialBoundsFitter({ nodes }: { nodes: TransitNode[] }) {
       const bounds = L.latLngBounds(nodes.map((n) => [n.lat, n.lng]));
       map.fitBounds(bounds, { padding: [50, 50], maxZoom: 12, animate: false });
     } else {
-      map.setView([12.9520, 77.5600], 12);
+      map.setView(INITIAL_CENTER, 12);
     }
     const timer = setTimeout(() => {
       map.invalidateSize();
@@ -106,60 +306,126 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
   pickedPickup,
   pickedDropoff,
   clusterColors,
+  tiltMode,
 }) => {
-  // In-memory cache for OSRM curving road geometry coordinates
-  const [osrmCache, setOsrmCache] = useState<Record<string, [number, number][]>>({});
-  const fetchingCorridors = useRef<Set<string>>(new Set());
+  // Revision counters to trigger re-renders when saved edge geometry or live pair geometry arrives
+  const [savedGeometryVersion, setSavedGeometryVersion] = useState(0);
+  const [livePairVersion, setLivePairVersion] = useState(0);
+  const [currentZoom, setCurrentZoom] = useState(12);
 
-  // Real curving road geometry via OSRM Public API
+  // 1. Fetch saved edge geometry from /edge-geometry.json on mount
   useEffect(() => {
-    let isMounted = true;
+    if (isSavedEdgeGeometryLoaded) {
+      setSavedGeometryVersion((v) => v + 1);
+      return;
+    }
 
-    clusters.forEach((cluster) => {
-      if (!cluster.sharedCorridorNodeIds || cluster.sharedCorridorNodeIds.length < 2) return;
-      const key = cluster.sharedCorridorNodeIds.join(';');
-      if (osrmCache[key] || fetchingCorridors.current.has(key)) return;
-
-      const stationNodes = cluster.sharedCorridorNodeIds
-        .map((id) => NODES[id])
-        .filter(Boolean);
-
-      if (stationNodes.length < 2) return;
-
-      const waypoints = stationNodes
-        .map((node) => `${node.lng},${node.lat}`)
-        .join(';');
-
-      fetchingCorridors.current.add(key);
-
-      fetch(
-        `https://router.project-osrm.org/route/v1/driving/${waypoints}?overview=full&geometries=geojson`,
-        { signal: AbortSignal.timeout(4000) }
-      )
-        .then((res) => {
-          if (!res.ok) throw new Error('OSRM error');
-          return res.json();
-        })
-        .then((data) => {
-          if (isMounted && data.code === 'Ok' && data.routes?.[0]?.geometry?.coordinates) {
-            const curvedCoords: [number, number][] = data.routes[0].geometry.coordinates.map(
-              ([lng, lat]: [number, number]) => [lat, lng]
-            );
-            setOsrmCache((prev) => ({ ...prev, [key]: curvedCoords }));
+    let active = true;
+    fetch('/edge-geometry.json')
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data: Record<string, [number, number][]>) => {
+        if (data && typeof data === 'object') {
+          for (const [key, coords] of Object.entries(data)) {
+            if (Array.isArray(coords)) {
+              savedEdgeGeometryCache.set(key, coords);
+            }
           }
-        })
-        .catch(() => {
-          // Gracefully fallback to straight node-to-node polyline
-        })
-        .finally(() => {
-          fetchingCorridors.current.delete(key);
-        });
-    });
+        }
+        isSavedEdgeGeometryLoaded = true;
+        if (active) setSavedGeometryVersion((v) => v + 1);
+      })
+      .catch(() => {
+        // File may not exist yet if script has not been run
+        isSavedEdgeGeometryLoaded = true;
+        if (active) setSavedGeometryVersion((v) => v + 1);
+      });
 
     return () => {
-      isMounted = false;
+      active = false;
     };
-  }, [clusters, osrmCache]);
+  }, []);
+
+  // 2. Fetch live OSRM only for pairs missing from the saved edge-geometry.json file
+  useEffect(() => {
+    if (!isSavedEdgeGeometryLoaded) return;
+
+    let isCancelled = false;
+
+    // Identify all missing pairs across all active clusters
+    const missingPairs: Array<{ key: string; a: string; b: string }> = [];
+
+    for (const cluster of clusters) {
+      const nodeIds = cluster.sharedCorridorNodeIds;
+      if (!nodeIds || nodeIds.length < 2) continue;
+
+      for (let i = 0; i < nodeIds.length - 1; i++) {
+        const u = nodeIds[i];
+        const v = nodeIds[i + 1];
+        const [a, b] = [u, v].sort();
+        const edgeKey = `${a}|${b}`;
+
+        // If pair is already saved in edge-geometry.json, do not call live OSRM
+        if (savedEdgeGeometryCache.has(edgeKey)) continue;
+
+        // If already in live cache, failed, or currently fetching, skip
+        if (
+          livePairGeometryCache.has(edgeKey) ||
+          livePairFailed.has(edgeKey) ||
+          livePairInFlight.has(edgeKey)
+        ) {
+          continue;
+        }
+
+        if (!missingPairs.some((p) => p.key === edgeKey)) {
+          missingPairs.push({ key: edgeKey, a, b });
+        }
+      }
+    }
+
+    if (missingPairs.length === 0) return;
+
+    const fetchMissingPairs = async () => {
+      for (const pair of missingPairs) {
+        if (isCancelled) break;
+        if (
+          savedEdgeGeometryCache.has(pair.key) ||
+          livePairGeometryCache.has(pair.key) ||
+          livePairFailed.has(pair.key)
+        ) {
+          continue;
+        }
+
+        const nodeA = NODES[pair.a];
+        const nodeB = NODES[pair.b];
+        if (!nodeA || !nodeB) continue;
+
+        livePairInFlight.add(pair.key);
+        const coords = await fetchPairOsrmWithRetry(nodeA, nodeB);
+        livePairInFlight.delete(pair.key);
+
+        if (isCancelled) break;
+
+        if (coords) {
+          livePairGeometryCache.set(pair.key, coords);
+        } else {
+          livePairFailed.add(pair.key);
+        }
+        setLivePairVersion((v) => v + 1);
+
+        // Polite delay between sequential calls
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    };
+
+    fetchMissingPairs();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [clusters, savedGeometryVersion]);
 
   // Base graph edges geometry
   const baseEdgeLines = useMemo(() => {
@@ -181,8 +447,26 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
     }).filter(Boolean);
   }, [peakMode]);
 
+  // Check corridor OSRM statuses for legend
+  const { hasOsrmCorridors, hasStraightCorridors } = useMemo(() => {
+    let hasOsrm = false;
+    let hasStraight = false;
+
+    clusters.forEach((c) => {
+      if (!c.sharedCorridorNodeIds || c.sharedCorridorNodeIds.length < 2) return;
+      const { isFromOsrm } = getCorridorGeometry(c.sharedCorridorNodeIds);
+      if (isFromOsrm) {
+        hasOsrm = true;
+      } else {
+        hasStraight = true;
+      }
+    });
+
+    return { hasOsrmCorridors: hasOsrm, hasStraightCorridors: hasStraight };
+  }, [clusters, savedGeometryVersion, livePairVersion]);
+
   return (
-    <div className="relative w-full h-full select-none">
+    <div className="relative w-full h-full select-none overflow-hidden">
       {/* Pick mode active banner overlay */}
       {pickTarget && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] px-4 py-2 rounded-xl bg-slate-900/90 border border-emerald-500/80 shadow-2xl backdrop-blur-md flex items-center space-x-2 text-xs font-semibold animate-pulse text-emerald-300">
@@ -221,10 +505,26 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
           <span className="w-6 h-0.5 border-t-2 border-dashed border-slate-500"></span>
           <span>Base Metro &amp; Road Graph</span>
         </div>
-        <div className="flex items-center space-x-2">
-          <span className="w-6 h-1 rounded-full bg-gradient-to-r from-cyan-400 to-emerald-400"></span>
-          <span>Active Pooled Corridors (OSRM Curving)</span>
-        </div>
+
+        {/* Dynamic Corridor Geometry Legend: OSRM Curving vs Straight (OSRM unavailable) */}
+        {hasOsrmCorridors && (
+          <div className="flex items-center space-x-2">
+            <span className="w-6 h-1 rounded-full bg-gradient-to-r from-cyan-400 to-emerald-400"></span>
+            <span>Active Pooled Corridors (OSRM Curving)</span>
+          </div>
+        )}
+        {hasStraightCorridors && (
+          <div className="flex items-center space-x-2 text-slate-400">
+            <span className="w-6 h-1 rounded-full bg-slate-500"></span>
+            <span>Active Pooled Corridors (Straight (OSRM unavailable))</span>
+          </div>
+        )}
+        {!hasOsrmCorridors && !hasStraightCorridors && (
+          <div className="flex items-center space-x-2 text-slate-400">
+            <span className="w-6 h-1 rounded-full bg-slate-600"></span>
+            <span>Active Pooled Corridors (Straight (OSRM unavailable))</span>
+          </div>
+        )}
       </div>
 
       <MapContainer
@@ -240,6 +540,12 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           attribution="© OpenStreetMap"
         />
+
+        {/* Resize Handler: invalidates size after mount and on window resize */}
+        <MapResizeHandler tiltMode={tiltMode} />
+
+        {/* Zoom Watcher: allows station labels to expand on zoom >= 13 */}
+        <ZoomWatcher onZoomChange={setCurrentZoom} />
 
         {/* Fits bounds on initial load so RVCE, Kengeri, Majestic, and Indiranagar fit cleanly */}
         <InitialBoundsFitter nodes={nodes} />
@@ -271,22 +577,17 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
           );
         })}
 
-        {/* 2. MatchCluster Shared Corridors (Glowing neon colored overlays with OSRM real road curves) */}
+        {/* 2. MatchCluster Shared Corridors (joined consecutive edge geometries with reversal & fallbacks) */}
         {clusters.map((cluster, idx) => {
           const isSelected = selectedCluster?.clusterId === cluster.clusterId;
-          const key = cluster.sharedCorridorNodeIds.join(';');
-          const coords: [number, number][] = cluster.sharedCorridorNodeIds
-            .map((id) => NODES[id])
-            .filter(Boolean)
-            .map((node) => [node.lat, node.lng]);
+          const { positions: corridorPositions, isFromOsrm } = getCorridorGeometry(
+            cluster.sharedCorridorNodeIds
+          );
 
-          if (coords.length < 2) return null;
-
-          // Use real curving OSRM street geometry if cached, otherwise fallback to straight station coords
-          const corridorPositions = osrmCache[key] || coords;
-          const isCurving = !!osrmCache[key];
+          if (corridorPositions.length < 2) return null;
 
           const color = clusterColors[idx % clusterColors.length];
+          const cleanId = cluster.clusterId.replace(/^[A-Z]+-?/i, '').replace(/^-+/, '') || cluster.clusterId;
 
           return (
             <React.Fragment key={`corridor-${cluster.clusterId}`}>
@@ -316,19 +617,23 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
                   <div className="text-xs space-y-1">
                     <div className="font-bold text-slate-100 flex items-center gap-1">
                       <Zap className="w-3.5 h-3.5 text-emerald-400" />
-                      <span>Pool {cluster.clusterId}</span>
+                      <span>Pool #{cleanId}</span>
                     </div>
                     <div className="text-slate-300">
                       Riders: <strong>{cluster.riders.length} commuters</strong>
                     </div>
                     <div className="text-slate-300">
-                      Corridor: <strong>{cluster.sharedDistanceKm} km</strong>
+                      Corridor: <strong>{cluster.sharedDistanceKm.toFixed(1)} km</strong>
                     </div>
                     <div className="text-emerald-400 font-semibold">
-                      Fare: ₹{cluster.discountedFarePerPersonRs}/rider ({cluster.savingsPercentage}% Saved)
+                      Fare: ₹{Math.round(cluster.discountedFarePerPersonRs)}/rider ({cluster.savingsPercentage.toFixed(0)}% Saved)
                     </div>
-                    <div className="text-[10px] text-cyan-300/80 font-mono pt-1 border-t border-slate-800">
-                      {isCurving ? '⚡ Real Curving Road Geometry (OSRM)' : 'Station Link Polyline'}
+                    <div className="text-[10px] font-mono pt-1 border-t border-slate-800">
+                      {isFromOsrm ? (
+                        <span className="text-cyan-300">⚡ OSRM Curving (Real Road Geometry)</span>
+                      ) : (
+                        <span className="text-amber-300">Straight (OSRM unavailable)</span>
+                      )}
                     </div>
                   </div>
                 </Popup>
@@ -342,6 +647,18 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
           const isRVCE = node.id === 'RVCE';
           const isPattanagere = node.id === 'PATTANAGERE' || node.name.toLowerCase().includes('pattanagere');
           const isCongested = peakMode && CONGESTED_NODES.has(node.id);
+
+          // Permanent tooltips only for RVCE Campus, Majestic, Indiranagar, Kengeri, and Banashankari.
+          // Other station names show on hover, or when zoom >= 13.
+          const isPermanent = PERMANENT_STATION_IDS.has(node.id) || currentZoom >= 13;
+
+          // RVCE Campus direction "top", Pattanagere "bottom" with offsets so none overlap
+          const tooltipDirection: 'top' | 'bottom' = isPattanagere ? 'bottom' : 'top';
+          const tooltipOffset: [number, number] = isPattanagere
+            ? [0, 10]
+            : isRVCE
+            ? [0, -10]
+            : [0, -8];
 
           return (
             <CircleMarker
@@ -364,9 +681,10 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
               }}
             >
               <Tooltip
-                permanent
-                direction={isPattanagere ? 'bottom' : 'top'}
-                offset={isPattanagere ? [0, 10] : [0, -10]}
+                key={`${node.id}-${isPermanent ? 'perm' : 'hover'}`}
+                permanent={isPermanent}
+                direction={tooltipDirection}
+                offset={tooltipOffset}
                 opacity={0.95}
                 className="custom-map-tooltip font-sans"
               >

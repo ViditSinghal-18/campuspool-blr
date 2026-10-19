@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from 'react';
 import Link from 'next/link';
-import { usePool } from '../../context/PoolContext';
+import { usePool, getRiderFareBreakdown } from '../../context/PoolContext';
 import type { MatchCluster } from '../../lib/types';
 import { Users, MapPin, Zap, TrendingDown, RefreshCw, Radio, ArrowRight } from 'lucide-react';
 import TiltCard3D from '../../components/TiltCard3D';
@@ -166,6 +166,33 @@ function PoolCard({ cluster, idx, onInspect }: { cluster: MatchCluster; idx: num
               {r.studentName.split(' ')[0]}
             </div>
           ))}
+        </div>
+
+        {/* Required Fare & Leg Breakdown */}
+        <div className="rounded-xl p-3 text-xs space-y-2 bg-black/40 border border-slate-800/60 font-sans">
+          {cluster.riders.map((r) => {
+            const b = getRiderFareBreakdown(r, cluster);
+            return (
+              <div key={r.userId} className="space-y-0.5 pb-2 last:pb-0 border-b last:border-b-0 border-slate-800/40">
+                {cluster.riders.length > 1 && (
+                  <div className="text-[10px] font-semibold text-slate-400 font-mono">
+                    {r.studentName.split(' ')[0]}:
+                  </div>
+                )}
+                <div className="text-slate-200">
+                  Ride together to {b.dropHub} ({b.sharedKm} km): Rs {b.sharedShare}
+                </div>
+                {b.remainingFare > 0 && (
+                  <div className="text-amber-300">
+                    Last leg to {b.destination}: Rs {b.remainingFare}
+                  </div>
+                )}
+                <div className="text-emerald-400 font-semibold">
+                  Total Rs {b.pooledTotal} vs solo Rs {b.soloFare} - {b.savingsPct}% saved
+                </div>
+              </div>
+            );
+          })}
         </div>
 
         {/* Departure window */}

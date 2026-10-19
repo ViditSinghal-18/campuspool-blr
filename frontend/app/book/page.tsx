@@ -3,7 +3,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
-import { usePool } from '../../context/PoolContext';
+import { usePool, getRiderFareBreakdown } from '../../context/PoolContext';
 import { NODES } from '../../lib/fallbackEngine';
 import type { LatLng } from '../../lib/types';
 import { MapPin, Navigation, ArrowRight, CheckCircle, User, Clock, Loader, Zap } from 'lucide-react';
@@ -346,6 +346,14 @@ export default function BookPage() {
                 </div>
                 {clusters.length > 0 && (() => {
                   const c = clusters[clusters.length - 1];
+                  const userRider =
+                    c.riders.find((r) =>
+                      name.trim() && r.studentName.toLowerCase().includes(name.trim().toLowerCase())
+                    ) ||
+                    c.riders[c.riders.length - 1] ||
+                    c.riders[0];
+                  const breakdown = userRider ? getRiderFareBreakdown(userRider, c) : null;
+
                   return (
                     <div className="rounded-xl p-5" style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(0,96,57,0.25)' }}>
                       <div className="flex justify-between items-start mb-4">
@@ -353,13 +361,36 @@ export default function BookPage() {
                           <div className="text-[10px] uppercase tracking-widest font-mono" style={{ color: 'var(--gold-dim)' }}>
                             POOL #{c.clusterId.replace(/^[A-Z]+-?/i, '').replace(/^-+/, '') || c.clusterId}
                           </div>
-                          <div className="font-serif text-2xl font-bold mt-0.5" style={{ color: 'var(--ivory)' }}>₹{Math.round(c.discountedFarePerPersonRs)}<span className="text-sm ml-1 font-normal" style={{ color: 'var(--ivory-dim)' }}>/person</span></div>
+                          <div className="font-serif text-2xl font-bold mt-0.5" style={{ color: 'var(--ivory)' }}>
+                            ₹{breakdown ? breakdown.pooledTotal : Math.round(c.discountedFarePerPersonRs)}
+                            <span className="text-sm ml-1 font-normal" style={{ color: 'var(--ivory-dim)' }}>/person</span>
+                          </div>
                         </div>
                         <div className="text-right">
                           <div className="text-[10px] uppercase tracking-widest" style={{ color: 'var(--gold-dim)' }}>Savings</div>
-                          <div className="font-serif text-xl font-bold" style={{ color: 'var(--emerald-glow)' }}>{c.savingsPercentage.toFixed(0)}%</div>
+                          <div className="font-serif text-xl font-bold" style={{ color: 'var(--emerald-glow)' }}>
+                            {breakdown ? breakdown.savingsPct : c.savingsPercentage.toFixed(0)}%
+                          </div>
                         </div>
                       </div>
+
+                      {/* Required fare and route breakdown */}
+                      {breakdown && (
+                        <div className="mb-3 p-3 rounded-lg bg-black/40 border border-emerald-900/40 text-xs space-y-1 font-sans">
+                          <div className="text-slate-200">
+                            Ride together to {breakdown.dropHub} ({breakdown.sharedKm} km): Rs {breakdown.sharedShare}
+                          </div>
+                          {breakdown.remainingFare > 0 && (
+                            <div className="text-amber-300">
+                              Last leg to {breakdown.destination}: Rs {breakdown.remainingFare}
+                            </div>
+                          )}
+                          <div className="text-emerald-400 font-semibold">
+                            Total Rs {breakdown.pooledTotal} vs solo Rs {breakdown.soloFare} - {breakdown.savingsPct}% saved
+                          </div>
+                        </div>
+                      )}
+
                       <div className="text-xs" style={{ color: 'var(--ivory-dim)' }}>
                         <span>{c.riders.length} riders · {c.sharedDistanceKm.toFixed(1)} km shared · drop at <strong>{c.dropOffSplitNodeName}</strong></span>
                       </div>

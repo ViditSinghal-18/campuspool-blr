@@ -17,10 +17,10 @@ export default function Navbar() {
   const { weather, peakMode, handleTogglePeakMode, isBackendLive } = usePool();
 
   const weatherIcon = weather?.isRaining
-    ? <CloudRain size={13} className="text-blue-400" />
+    ? <CloudRain size={13} className="text-blue-400 shrink-0" />
     : weather?.conditionText?.toLowerCase().includes('snow')
-    ? <CloudSnow size={13} className="text-blue-200" />
-    : <Sun size={13} style={{ color: 'var(--gold)' }} />;
+    ? <CloudSnow size={13} className="text-blue-200 shrink-0" />
+    : <Sun size={13} className="shrink-0" style={{ color: 'var(--gold)' }} />;
 
   const surgeLabel = weather?.isRaining
     ? `${weather.recommendedSurgeMultiplier.toFixed(2)}x Rain Surge`
@@ -31,9 +31,9 @@ export default function Navbar() {
       className="fixed top-0 inset-x-0 z-50 glass"
       style={{ borderBottom: '1px solid var(--glass-border)' }}
     >
-      <div className="mx-auto flex h-14 max-w-screen-xl items-center px-4 gap-6">
+      <div className="mx-auto flex h-14 max-w-screen-xl items-center px-4 gap-3 sm:gap-4 md:gap-6">
         {/* Brand */}
-        <Link href="/" className="flex items-center gap-2.5 shrink-0 group">
+        <Link href="/" className="flex items-center gap-2 shrink-0 group">
           <span
             className="animate-pulse-dot h-2 w-2 rounded-full"
             style={{ backgroundColor: 'var(--emerald-glow)' }}
@@ -47,7 +47,7 @@ export default function Navbar() {
             <span className="text-xs ml-1" style={{ color: 'var(--gold)' }}>BLR</span>
           </span>
           <span
-            className="hidden sm:inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium"
+            className="hidden md:inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium"
             style={{ background: 'rgba(0,96,57,0.25)', color: 'var(--emerald-soft)', border: '1px solid rgba(0,96,57,0.4)' }}
           >
             @rvce.edu.in
@@ -62,7 +62,7 @@ export default function Navbar() {
               <Link
                 key={link.href}
                 href={link.href}
-                className="relative px-3 py-1.5 text-xs font-medium rounded-lg transition-all duration-200"
+                className="relative px-2.5 sm:px-3 py-1.5 text-xs font-medium rounded-lg transition-all duration-200"
                 style={{
                   color: active ? 'var(--emerald-glow)' : 'var(--ivory-dim)',
                   background: active ? 'rgba(0,96,57,0.18)' : 'transparent',
@@ -80,10 +80,10 @@ export default function Navbar() {
           })}
         </nav>
 
-        {/* Weather Pill */}
+        {/* Weather Chip (Shown consistently across views and screen sizes) */}
         {weather && (
           <div
-            className="hidden md:flex items-center gap-1.5 rounded-full px-3 py-1 text-xs"
+            className="flex items-center gap-1.5 rounded-full px-2.5 sm:px-3 py-1 text-xs shrink-0 transition-all"
             style={{
               background: weather.isRaining ? 'rgba(59,130,246,0.12)' : 'rgba(0,96,57,0.12)',
               border: `1px solid ${weather.isRaining ? 'rgba(59,130,246,0.3)' : 'rgba(0,96,57,0.3)'}`,
@@ -91,18 +91,21 @@ export default function Navbar() {
             }}
           >
             {weatherIcon}
-            <span>{weather.temperatureC.toFixed(1)}°C</span>
-            <span className="opacity-60">·</span>
-            <span style={{ color: weather.isRaining ? '#93c5fd' : 'var(--emerald-soft)' }}>
+            <span className="font-mono text-xs">{weather.temperatureC.toFixed(1)}°C</span>
+            <span className="opacity-60 hidden sm:inline">·</span>
+            <span
+              className="hidden sm:inline font-medium"
+              style={{ color: weather.isRaining ? '#93c5fd' : 'var(--emerald-soft)' }}
+            >
               {surgeLabel}
             </span>
           </div>
         )}
 
-        {/* Peak Toggle */}
+        {/* Peak Toggle (Shown consistently across views and screen sizes) */}
         <button
           onClick={handleTogglePeakMode}
-          className="hidden sm:flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-medium transition-all duration-200"
+          className="flex items-center gap-1.5 rounded-lg px-2.5 sm:px-3 py-1.5 text-xs font-medium transition-all duration-200 shrink-0"
           style={{
             background: peakMode ? 'rgba(212,175,55,0.15)' : 'rgba(90,107,96,0.18)',
             border: `1px solid ${peakMode ? 'rgba(212,175,55,0.35)' : 'rgba(90,107,96,0.3)'}`,
@@ -110,14 +113,14 @@ export default function Navbar() {
           }}
           title="Toggle 1.4x Peak Traffic Dijkstra weight scaling"
         >
-          <Zap size={12} />
+          <Zap size={12} className={peakMode ? 'text-amber-400' : 'text-slate-400'} />
           <span>Peak {peakMode ? 'ON' : 'OFF'}</span>
         </button>
 
         {/* Backend status */}
-        <div className="flex items-center gap-1.5 text-[10px]" style={{ color: 'var(--slate-light)' }}>
+        <div className="flex items-center gap-1.5 text-[10px] shrink-0" style={{ color: 'var(--slate-light)' }}>
           <Activity size={11} style={{ color: isBackendLive ? 'var(--emerald-glow)' : '#f59e0b' }} />
-          <span className="hidden lg:inline">{isBackendLive ? 'Live API' : 'Fallback'}</span>
+          <span className="hidden xl:inline">{isBackendLive ? 'Live API' : 'Fallback'}</span>
         </div>
 
         {/* API Docs */}
@@ -125,7 +128,7 @@ export default function Navbar() {
           href="http://localhost:8080/swagger-ui.html"
           target="_blank"
           rel="noopener noreferrer"
-          className="hidden lg:flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-medium transition-all duration-200 hover:opacity-80"
+          className="hidden lg:flex items-center gap-1 rounded-lg px-2.5 sm:px-3 py-1.5 text-xs font-medium transition-all duration-200 hover:opacity-80 shrink-0"
           style={{
             background: 'rgba(90,107,96,0.14)',
             border: '1px solid rgba(90,107,96,0.28)',

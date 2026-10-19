@@ -4,7 +4,7 @@ import { useState, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { usePool } from '../../context/PoolContext';
-import { Zap, Radio, RefreshCw, RotateCcw, ExternalLink, ChevronRight, Users, MapPin, TrendingDown, X } from 'lucide-react';
+import { Zap, Radio, RefreshCw, ExternalLink, ChevronRight, Users, MapPin, TrendingDown, X } from 'lucide-react';
 
 // SSR-disabled radar map
 const RadarMap = dynamic(() => import('../../components/MapCanvas'), {
@@ -42,22 +42,18 @@ export default function RadarPage() {
     ? [...matchedPools, selectedCluster]
     : matchedPools;
 
-  const selectedIdx = selectedCluster
-    ? clusters.findIndex((c) => c.clusterId === selectedCluster.clusterId)
-    : -1;
-
   return (
     <div
-      className="relative flex flex-col"
-      style={{ height: '100vh', paddingTop: '3.5rem', background: 'var(--obsidian)' }}
+      className="relative flex flex-col w-full h-[calc(100vh-64px)] mt-16 overflow-hidden"
+      style={{ background: 'var(--obsidian)' }}
     >
       {/* 3D tilt wrapper */}
       <div
-        className="flex-1 relative overflow-hidden transition-all duration-700"
+        className="flex-1 relative w-full h-full overflow-hidden transition-all duration-700"
         style={tiltMode ? { perspective: '1400px', perspectiveOrigin: '50% 40%' } : {}}
       >
         <div
-          className="absolute inset-0 transition-transform duration-700"
+          className="absolute inset-0 w-full h-full transition-transform duration-700"
           style={tiltMode ? { transform: 'rotateX(22deg) scale(1.1)', transformOrigin: '50% 60%' } : {}}
         >
           <RadarMap
@@ -71,15 +67,16 @@ export default function RadarPage() {
             pickedPickup={pickedPickup}
             pickedDropoff={pickedDropoff}
             clusterColors={CLUSTER_COLORS}
+            tiltMode={tiltMode}
           />
         </div>
 
-        {/* ── Floating glass control dock ── */}
-        <div className="absolute top-4 left-4 z-[500] flex flex-col gap-2">
+        {/* ── Floating glass control dock (left controls) ── */}
+        <div className="absolute top-4 left-4 z-[500] flex flex-col gap-2 p-2 rounded-2xl bg-black/80 backdrop-blur-md border border-white/10 shadow-2xl">
           {/* Brand badge */}
           <div
-            className="glass rounded-xl px-3 py-2 text-xs font-semibold"
-            style={{ border: '1px solid var(--glass-border)', color: 'var(--emerald-glow)' }}
+            className="rounded-xl px-3 py-2 text-xs font-semibold bg-white/5 border border-white/10"
+            style={{ color: 'var(--emerald-glow)' }}
           >
             <span className="animate-pulse-dot inline-block h-1.5 w-1.5 rounded-full bg-emerald-400 mr-2" />
             Bengaluru Live Radar
@@ -88,10 +85,10 @@ export default function RadarPage() {
           {/* 3D Tilt toggle */}
           <button
             onClick={() => setTiltMode(!tiltMode)}
-            className="glass rounded-xl px-3 py-2 text-xs font-medium transition-all hover:opacity-85"
+            className="rounded-xl px-3 py-2 text-xs font-medium transition-all hover:bg-white/10 border border-white/10"
             style={{
-              border: `1px solid ${tiltMode ? 'rgba(212,175,55,0.45)' : 'var(--glass-border)'}`,
               color: tiltMode ? 'var(--gold)' : 'var(--ivory-dim)',
+              background: tiltMode ? 'rgba(212,175,55,0.15)' : 'rgba(255,255,255,0.03)',
             }}
           >
             {tiltMode ? '⬛ Flat View' : '◈ 3D Tilt View'}
@@ -100,10 +97,10 @@ export default function RadarPage() {
           {/* Peak mode */}
           <button
             onClick={handleTogglePeakMode}
-            className="glass rounded-xl px-3 py-2 text-xs font-medium transition-all hover:opacity-85"
+            className="rounded-xl px-3 py-2 text-xs font-medium transition-all hover:bg-white/10 border border-white/10"
             style={{
-              border: `1px solid ${peakMode ? 'rgba(212,175,55,0.45)' : 'var(--glass-border)'}`,
               color: peakMode ? 'var(--gold)' : 'var(--ivory-dim)',
+              background: peakMode ? 'rgba(212,175,55,0.15)' : 'rgba(255,255,255,0.03)',
             }}
           >
             <Zap size={11} className="inline mr-1" />
@@ -114,8 +111,8 @@ export default function RadarPage() {
           <button
             onClick={handleSeed}
             disabled={isSeeding}
-            className="glass rounded-xl px-3 py-2 text-xs font-medium transition-all hover:opacity-85 disabled:opacity-40"
-            style={{ border: 'var(--glass-border)', color: 'var(--emerald-soft)' }}
+            className="rounded-xl px-3 py-2 text-xs font-medium transition-all hover:bg-white/10 border border-white/10 disabled:opacity-40"
+            style={{ color: 'var(--emerald-soft)', background: 'rgba(255,255,255,0.03)' }}
           >
             <Zap size={11} className="inline mr-1" />
             {isSeeding ? 'Seeding…' : 'Populate 15'}
@@ -124,10 +121,10 @@ export default function RadarPage() {
           {/* Live stream */}
           <button
             onClick={toggleStream}
-            className="glass rounded-xl px-3 py-2 text-xs font-medium transition-all hover:opacity-85"
+            className="rounded-xl px-3 py-2 text-xs font-medium transition-all hover:bg-white/10 border border-white/10"
             style={{
-              border: `1px solid ${isStreaming ? 'rgba(239,68,68,0.45)' : 'var(--glass-border)'}`,
               color: isStreaming ? '#ef4444' : 'var(--ivory-dim)',
+              background: isStreaming ? 'rgba(239,68,68,0.15)' : 'rgba(255,255,255,0.03)',
             }}
           >
             <Radio size={11} className={`inline mr-1 ${isStreaming ? 'animate-pulse-dot' : ''}`} />
@@ -137,56 +134,54 @@ export default function RadarPage() {
           {/* Reset */}
           <button
             onClick={handleReset}
-            className="glass rounded-xl px-3 py-2 text-xs font-medium transition-all hover:opacity-85"
-            style={{ border: '1px solid var(--glass-border)', color: 'var(--slate-light)' }}
+            className="rounded-xl px-3 py-2 text-xs font-medium transition-all hover:bg-white/10 border border-white/10"
+            style={{ color: 'var(--slate-light)', background: 'rgba(255,255,255,0.03)' }}
           >
             <RefreshCw size={11} className="inline mr-1" />
             Reset
           </button>
         </div>
 
-        {/* ── Cluster list panel (top-right) ── */}
-        <div className="absolute top-4 right-4 z-[500] w-56">
-          <div className="glass rounded-xl overflow-hidden" style={{ border: '1px solid var(--glass-border)' }}>
-            <div className="flex items-center justify-between px-3 py-2" style={{ borderBottom: '1px solid var(--glass-border)' }}>
-              <span className="text-[10px] uppercase tracking-widest font-mono" style={{ color: 'var(--gold-dim)' }}>
-                Active Pools ({matchedPools.length})
-              </span>
-              <button onClick={() => setShowDrawer(true)} className="text-[10px] flex items-center gap-0.5 hover:opacity-80" style={{ color: 'var(--emerald-glow)' }}>
-                All <ChevronRight size={10} />
-              </button>
-            </div>
-            <div className="max-h-64 overflow-y-auto">
-              {matchedPools.length === 0 ? (
-                <div className="px-3 py-4 text-[11px] text-center" style={{ color: 'var(--slate-light)' }}>
-                  No active pools.<br />Populate to begin.
-                </div>
-              ) : (
-                matchedPools.map((c, i) => {
-                  const color = CLUSTER_COLORS[i % CLUSTER_COLORS.length];
-                  const active = selectedCluster?.clusterId === c.clusterId;
-                  const cleanId = c.clusterId.replace(/^[A-Z]+-?/i, '').replace(/^-+/, '') || c.clusterId;
-                  return (
-                    <button
-                      key={c.clusterId}
-                      onClick={() => setSelectedCluster(active ? null : c)}
-                      className="w-full flex items-start gap-2 px-3 py-2.5 text-left transition-colors hover:bg-white/5"
-                      style={{ borderBottom: '1px solid rgba(90,107,96,0.12)', background: active ? `${color}12` : 'transparent' }}
-                    >
-                      <span className="mt-0.5 h-2 w-2 shrink-0 rounded-full" style={{ background: color }} />
-                      <div>
-                        <div className="text-[11px] font-medium" style={{ color: 'var(--ivory)' }}>
-                          #{cleanId} · {c.riders.length} riders
-                        </div>
-                        <div className="text-[9px]" style={{ color: 'var(--slate-light)' }}>
-                          ₹{Math.round(c.discountedFarePerPersonRs)}/p · {c.savingsPercentage.toFixed(0)}% saved
-                        </div>
+        {/* ── Cluster list panel (top-right Active Pools) ── */}
+        <div className="absolute top-4 right-4 z-[500] w-56 rounded-xl overflow-hidden bg-black/80 backdrop-blur-md border border-white/10 shadow-2xl">
+          <div className="flex items-center justify-between px-3 py-2 border-b border-white/10">
+            <span className="text-[10px] uppercase tracking-widest font-mono" style={{ color: 'var(--gold-dim)' }}>
+              Active Pools ({matchedPools.length})
+            </span>
+            <button onClick={() => setShowDrawer(true)} className="text-[10px] flex items-center gap-0.5 hover:opacity-80" style={{ color: 'var(--emerald-glow)' }}>
+              All <ChevronRight size={10} />
+            </button>
+          </div>
+          <div className="max-h-64 overflow-y-auto">
+            {matchedPools.length === 0 ? (
+              <div className="px-3 py-4 text-[11px] text-center text-slate-400">
+                No active pools.<br />Populate to begin.
+              </div>
+            ) : (
+              matchedPools.map((c, i) => {
+                const color = CLUSTER_COLORS[i % CLUSTER_COLORS.length];
+                const active = selectedCluster?.clusterId === c.clusterId;
+                const cleanId = c.clusterId.replace(/^[A-Z]+-?/i, '').replace(/^-+/, '') || c.clusterId;
+                return (
+                  <button
+                    key={c.clusterId}
+                    onClick={() => setSelectedCluster(active ? null : c)}
+                    className="w-full flex items-start gap-2 px-3 py-2.5 text-left transition-colors hover:bg-white/5 border-b border-white/5"
+                    style={{ background: active ? `${color}25` : 'transparent' }}
+                  >
+                    <span className="mt-0.5 h-2 w-2 shrink-0 rounded-full" style={{ background: color }} />
+                    <div>
+                      <div className="text-[11px] font-medium" style={{ color: 'var(--ivory)' }}>
+                        #{cleanId} · {c.riders.length} riders
                       </div>
-                    </button>
-                  );
-                })
-              )}
-            </div>
+                      <div className="text-[9px]" style={{ color: 'var(--slate-light)' }}>
+                        ₹{Math.round(c.discountedFarePerPersonRs)}/p · {c.savingsPercentage.toFixed(0)}% saved
+                      </div>
+                    </div>
+                  </button>
+                );
+              })
+            )}
           </div>
         </div>
 
