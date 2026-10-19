@@ -1,7 +1,64 @@
-﻿   node_modules/
-   .next/
-   backend/target/
-   target/
-   .vscode/
-   .env
-   .env.local
+# ── Node & Next.js ──────────────────────────────────────────────
+node_modules/
+frontend/node_modules/
+.next/
+frontend/.next/
+frontend/out/
+frontend/build/
+.pnp
+.pnp.js
+
+# ── Java & Maven ──────────────────────────────────────────────
+target/
+backend/target/
+*.class
+*.jar
+*.war
+*.nar
+*.ear
+*.zip
+*.tar.gz
+*.rar
+
+# ── Environment Variables ─────────────────────────────────────
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+frontend/.env
+frontend/.env.local
+
+# ── Logs & Debug ──────────────────────────────────────────────
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.turbo
+
+# ── IDEs & Editors ───────────────────────────────────────────
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.iws
+*.iml
+*.ipr
+.classpath
+.project
+.settings/
+*.sublime-workspace
+*.sublime-project
+
+# ── Operating System Artifacts ────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

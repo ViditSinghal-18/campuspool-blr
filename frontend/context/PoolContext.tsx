@@ -23,7 +23,12 @@ import {
   snapAndRequestRide,
   toggleTrafficMode,
 } from '../lib/api';
-import { NODES as FALLBACK_NODES, GRAPH_EDGES } from '../lib/fallbackEngine';
+import {
+  NODES as FALLBACK_NODES,
+  GRAPH_EDGES,
+  buildSeededRequests,
+  matchRides,
+} from '../lib/fallbackEngine';
 
 // ─── Default Initial Weather Telemetry ─────────────────────────────────────────
 const DEFAULT_WEATHER: WeatherTelemetry = {
@@ -225,6 +230,24 @@ export function PoolProvider({ children }: { children: React.ReactNode }) {
   const [selectedCluster, setSelectedCluster] = useState<MatchCluster | null>(null);
   const [toasts, setToasts] = useState<ToastMsg[]>([]);
   const sseRef = useRef<EventSource | null>(null);
+  const intervalRef = useRef<NodeJS.Timeout | number | null>(null);
+  const peakModeRef = useRef<boolean>(peakMode);
+  useEffect(() => {
+    peakModeRef.current = peakMode;
+  }, [peakMode]);
+
+  useEffect(() => {
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+      if (sseRef.current) {
+        sseRef.current.close();
+        sseRef.current = null;
+      }
+    };
+  }, []);
 
   const addToast = useCallback((type: ToastMsg['type'], msg: string) => {
     const id = Math.random().toString(36).slice(2);
@@ -281,6 +304,15 @@ export function PoolProvider({ children }: { children: React.ReactNode }) {
   }, [peakMode, addToast]);
 
   const handleReset = useCallback(async () => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    if (sseRef.current) {
+      sseRef.current.close();
+      sseRef.current = null;
+    }
+    setIsStreaming(false);
     await resetSimulation();
     setRequests([]);
     setClusters([]);
@@ -313,37 +345,147 @@ export function PoolProvider({ children }: { children: React.ReactNode }) {
     [peakMode, addToast],
   );
 
+  const startClientSideStream = useCallback(() => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    if (sseRef.current) {
+      sseRef.current.close();
+      sseRef.current = null;
+    }
+
+    setIsStreaming(true);
+    const seeded = buildSeededRequests(peakModeRef.current);
+    let currentIndex = 0;
+    let accumulated: RideRequest[] = [];
+
+    // Clear previous requests and clusters for fresh incoming stream
+    setRequests([]);
+    setClusters([]);
+    setSelectedCluster(null);
+
+    const streamTick = () => {
+      if (currentIndex >= seeded.length) {
+        if (intervalRef.current) {
+          clearInterval(intervalRef.current);
+          intervalRef.current = null;
+        }
+        setIsStreaming(false);
+        return;
+      }
+
+      const rider = seeded[currentIndex];
+      accumulated = [...accumulated, rider];
+      const rawClusters = matchRides(accumulated, peakModeRef.current);
+      const recomputed = rawClusters.map(recalculateClusterSavings);
+
+      setRequests([...accumulated]);
+      setClusters(recomputed);
+
+      const activePools = recomputed.filter(
+        (c) => c.riders && c.riders.length >= 2
+      ).length;
+
+      addToast(
+        'success',
+        `🟢 ${rider.studentName} (${currentIndex + 1}/15) joined → ${activePools} active ${
+          activePools === 1 ? 'pool' : 'pools'
+        }`
+      );
+
+      currentIndex++;
+      if (currentIndex >= seeded.length) {
+        if (intervalRef.current) {
+          clearInterval(intervalRef.current);
+          intervalRef.current = null;
+        }
+        setIsStreaming(false);
+      }
+    };
+
+    // Emit first commuter immediately, then subsequent commuters every 2 seconds
+    streamTick();
+    intervalRef.current = setInterval(streamTick, 2000);
+  }, [addToast]);
+
   const toggleStream = useCallback(() => {
     if (isStreaming) {
-      sseRef.current?.close();
-      sseRef.current = null;
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+      if (sseRef.current) {
+        sseRef.current.close();
+        sseRef.current = null;
+      }
       setIsStreaming(false);
       addToast('info', '🔴 Live stream disconnected.');
       return;
     }
-    if (!API_BASE && process.env.NODE_ENV !== 'development') {
-      addToast('info', 'Live stream unavailable in Demo mode.');
+
+    // In Fallback Mode / Vercel (or when backend is offline/unreachable):
+    // silently run client-side setInterval every 2 seconds without red error toasts
+    const isFallbackMode = !isBackendLive || (!API_BASE && process.env.NODE_ENV !== 'development');
+    if (isFallbackMode) {
+      startClientSideStream();
       return;
     }
+
     setIsStreaming(true);
-    addToast('info', '🔴 Live stream active — commuters arriving every 2.5 s…');
-    const sse = new EventSource(`${API_BASE}/api/simulation/stream`);
-    sseRef.current = sse;
-    sse.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data) as { requests: RideRequest[]; clusters: MatchCluster[] };
-        setRequests(data.requests);
-        setClusters((data.clusters || []).map(recalculateClusterSavings));
-        setIsBackendLive(true);
-      } catch { /* ignore */ }
-    };
-    sse.onerror = () => {
-      sse.close();
-      sseRef.current = null;
-      setIsStreaming(false);
-      addToast('error', 'SSE stream lost — backend may be offline.');
-    };
-  }, [isStreaming, addToast]);
+    try {
+      const sse = new EventSource(`${API_BASE || 'http://localhost:8080'}/api/simulation/stream`);
+      sseRef.current = sse;
+
+      sse.onmessage = (e) => {
+        try {
+          const data = JSON.parse(e.data) as {
+            step?: number;
+            totalSteps?: number;
+            latestRider?: RideRequest;
+            requests: RideRequest[];
+            clusters: MatchCluster[];
+          };
+          setRequests(data.requests);
+          const recomputed = (data.clusters || []).map(recalculateClusterSavings);
+          setClusters(recomputed);
+          setIsBackendLive(true);
+
+          const activePools = recomputed.filter(
+            (c) => c.riders && c.riders.length >= 2
+          ).length;
+
+          if (data.latestRider) {
+            addToast(
+              'success',
+              `🟢 ${data.latestRider.studentName} (${data.step ?? data.requests.length}/${
+                data.totalSteps ?? 15
+              }) joined → ${activePools} active ${activePools === 1 ? 'pool' : 'pools'}`
+            );
+          } else {
+            addToast(
+              'success',
+              `🟢 Commuter arrival (${data.requests.length}/15) → ${activePools} active ${
+                activePools === 1 ? 'pool' : 'pools'
+              }`
+            );
+          }
+        } catch { /* ignore */ }
+      };
+
+      sse.onerror = () => {
+        sse.close();
+        sseRef.current = null;
+        setIsBackendLive(false);
+        // Do NOT show red toast "SSE stream lost — backend may be offline."
+        // Instead, silently fall back to client-side setInterval stream!
+        startClientSideStream();
+      };
+    } catch {
+      setIsBackendLive(false);
+      startClientSideStream();
+    }
+  }, [isStreaming, isBackendLive, addToast, startClientSideStream]);
 
   return (
     <PoolContext.Provider
